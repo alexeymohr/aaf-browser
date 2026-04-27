@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aafbrowser"
+version = "0.1.0"
+description = "Read-only inspection tool for AAF (Advanced Authoring Format) files at both CFB and AAF object layers."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Alexey Mohr" }]
+license = { text = "MIT" }
+dependencies = [
+    "pyaaf2>=1.7.1",
+    "click>=8.1,<8.4",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+aafbrowser = "aafbrowser.cli.__main__:cli"
+
+[tool.setuptools.packages.find]
+include = ["aafbrowser*"]
+exclude = ["tests*", "samples*", "docs*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
