@@ -102,11 +102,22 @@ const api = {
     if (!r.ok) throw await apiError(r);
     return r.json();
   },
-  async find({ pattern, scope, layer }) {
+  async find({ pattern, scope, layer, classes }) {
     const qs = new URLSearchParams({
       pattern, in: scope, layer,
     });
+    for (const c of classes || []) qs.append("class", c);
     const r = await fetch("/api/find?" + qs.toString());
+    if (!r.ok) throw await apiError(r);
+    return r.json();
+  },
+  async walk({ mob_id, path, slot_id, max_hops }) {
+    const qs = new URLSearchParams();
+    if (mob_id) qs.set("mob_id", mob_id);
+    if (path) qs.set("path", path);
+    if (slot_id != null) qs.set("slot_id", String(slot_id));
+    if (max_hops != null) qs.set("max_hops", String(max_hops));
+    const r = await fetch("/api/walk?" + qs.toString());
     if (!r.ok) throw await apiError(r);
     return r.json();
   },
@@ -166,8 +177,10 @@ function wireTopbar() {
     cfbState.expanded = new Set();
     inspectorState.trail = [];
     inspectorState.current = null;
+    findState.classes = new Set();
     setFileStatus();
     renderMobList();
+    renderClassFilterOptions();
     $("#cfb-tree").replaceChildren();
     $("#inspector").replaceChildren(
       el("p", { class: "muted" }, "Open a file, then select a Mob to inspect it.")
@@ -199,7 +212,9 @@ function wireTopbar() {
       cfbState.expanded = new Set();
       inspectorState.trail = [];
       inspectorState.current = null;
+      findState.classes = new Set();
       setFileStatus();
+      renderClassFilterOptions();
       $("#open-dialog").close();
       const mobs = await api.mobs();
       state.mobs = mobs.mobs;
@@ -660,6 +675,7 @@ function renderInspectorObject(obj) {
           obj.mob_id
         )
       : null,
+    walkButtonForObject(obj),
   ].filter(Boolean));
   inspector.appendChild(header);
 
@@ -675,6 +691,121 @@ function renderInspectorObject(obj) {
     table.appendChild(renderPropertyRow(pname, props[pname]));
   }
   inspector.appendChild(table);
+}
+
+function walkButtonForObject(obj) {
+  // Show Walk affordance on Mobs (Composition/Master/Source). Mobs have
+  // a meaningful chain entry; non-Mob objects don't.
+  if (!obj || obj._type !== "aaf_object") return null;
+  if (!obj.class || !obj.class.endsWith("Mob")) return null;
+  if (!obj.mob_id) return null;
+
+  const slotIds = collectSlotIds(obj);
+  const container = el("span", { class: "walk-controls" });
+  let slotSelect = null;
+  if (slotIds.length > 1) {
+    slotSelect = el("select", {
+      class: "slot-select",
+      title: "Starting slot for the chain walk",
+    });
+    for (const sid of slotIds) {
+      slotSelect.appendChild(
+        el("option", { value: String(sid) }, `slot ${sid}`)
+      );
+    }
+  }
+  if (slotSelect) container.appendChild(slotSelect);
+  container.appendChild(
+    el(
+      "button",
+      {
+        type: "button",
+        class: "walk-btn",
+        onclick: () =>
+          runChainWalk(
+            obj.mob_id,
+            slotSelect ? Number(slotSelect.value) : null
+          ),
+      },
+      "Walk chain"
+    )
+  );
+  return container;
+}
+
+function collectSlotIds(obj) {
+  const ids = [];
+  const slots = obj && obj.properties && obj.properties.Slots;
+  if (!Array.isArray(slots)) return ids;
+  for (const slot of slots) {
+    if (!slot || !slot.properties) continue;
+    const sid = slot.properties.SlotID;
+    if (typeof sid === "number") ids.push(sid);
+  }
+  return ids;
+}
+
+async function runChainWalk(mobId, slotId) {
+  const inspector = $("#inspector");
+  // Append (or replace) a #chain-panel below the property table.
+  let panel = $("#chain-panel");
+  if (!panel) {
+    panel = el("section", { id: "chain-panel", class: "chain-panel" });
+    inspector.appendChild(panel);
+  }
+  panel.replaceChildren(
+    el("h3", { class: "chain-header" }, "Chain"),
+    el("p", { class: "muted" }, "Walking…")
+  );
+  try {
+    const env = await api.walk({ mob_id: mobId, slot_id: slotId });
+    renderChain(panel, env);
+  } catch (e) {
+    panel.replaceChildren(
+      el("h3", { class: "chain-header" }, "Chain"),
+      el("p", { class: "error" }, "Error: " + (e.message || String(e)))
+    );
+  }
+}
+
+function renderChain(panel, env) {
+  panel.replaceChildren(
+    el("h3", { class: "chain-header" }, "Chain")
+  );
+  for (let i = 0; i < env.hops.length; i++) {
+    const h = env.hops[i];
+    const row = el(
+      "div",
+      {
+        class: "chain-hop" + (h.terminal ? " terminal" : ""),
+        title: h.mob_id,
+        onclick: () => navigateToMobId(h.mob_id),
+      },
+      [
+        el("span", { class: "hop-marker" }, h.terminal ? "●" : "○"),
+        el("span", { class: "hop-class" }, h.mob_class),
+        h.mob_name
+          ? el("span", { class: "hop-name" }, `"${h.mob_name}"`)
+          : el("span", { class: "muted hop-name" }, "untitled"),
+        el("span", { class: "hop-meta" }, `slot ${h.slot_id}`),
+        el("span", { class: "hop-meta" }, `seg ${h.segment_class}`),
+        h.physical_track_number != null
+          ? el("span", { class: "hop-meta" }, `ptn ${h.physical_track_number}`)
+          : null,
+        h.edit_rate
+          ? el("span", { class: "hop-meta" }, h.edit_rate)
+          : null,
+        h.terminal && h.terminal_reason
+          ? el(
+              "span",
+              { class: "hop-terminal" },
+              "★ " + h.terminal_reason
+            )
+          : null,
+      ].filter(Boolean)
+    );
+    panel.appendChild(row);
+  }
 }
 
 function renderPropertyRow(pname, value) {
@@ -954,6 +1085,7 @@ function renderValueCell(v) {
 const findState = {
   matches: [],
   pattern: "",
+  classes: new Set(), // Mob classes to filter to; empty = all
 };
 
 function wireFindPanel() {
@@ -968,6 +1100,57 @@ function wireFindPanel() {
       runFind();
     }
   });
+  // Close the class filter popover on outside click.
+  document.addEventListener("click", (ev) => {
+    const det = $("#find-class-filter");
+    if (det && det.open && !det.contains(ev.target)) {
+      det.open = false;
+    }
+  });
+}
+
+function renderClassFilterOptions() {
+  const host = $("#find-class-options");
+  host.replaceChildren();
+  if (!state.file || !state.file.classes_summary) {
+    host.appendChild(el("p", { class: "muted" }, "Open a file to see classes."));
+    updateClassFilterSummary();
+    return;
+  }
+  const entries = Object.entries(state.file.classes_summary).sort((a, b) => {
+    const order = (c) =>
+      c === "CompositionMob" ? 0
+      : c === "MasterMob" ? 1
+      : c === "SourceMob" ? 2
+      : 3;
+    return order(a[0]) - order(b[0]) || a[0].localeCompare(b[0]);
+  });
+  for (const [cls, count] of entries) {
+    const cb = el("input", { type: "checkbox", value: cls });
+    cb.checked = findState.classes.has(cls);
+    cb.addEventListener("change", () => {
+      if (cb.checked) findState.classes.add(cls);
+      else findState.classes.delete(cls);
+      updateClassFilterSummary();
+    });
+    host.appendChild(
+      el("label", {}, [
+        cb,
+        el("span", {}, cls),
+        el("span", { class: "count" }, String(count)),
+      ])
+    );
+  }
+  updateClassFilterSummary();
+}
+
+function updateClassFilterSummary() {
+  const summary = $("#find-class-summary");
+  if (!summary) return;
+  const count = findState.classes.size;
+  if (count === 0) summary.textContent = "all classes";
+  else if (count === 1) summary.textContent = [...findState.classes][0];
+  else summary.textContent = `${count} classes`;
 }
 
 async function runFind() {
@@ -976,21 +1159,23 @@ async function runFind() {
   if (!pattern) return;
   const scope = $("#find-scope").value;
   const layer = $("#find-layer").value;
+  const classes = [...findState.classes];
   const panel = $("#find-panel");
   panel.classList.remove("collapsed");
   const summary = $("#find-summary");
-  summary.textContent = `Searching "${pattern}" …`;
+  const classNote = classes.length ? ` (in ${classes.join(", ")})` : "";
+  summary.textContent = `Searching "${pattern}"${classNote} …`;
   summary.classList.add("muted");
   const host = $("#find-results");
   host.replaceChildren();
   try {
-    const env = await api.find({ pattern, scope, layer });
+    const env = await api.find({ pattern, scope, layer, classes });
     findState.matches = env.matches;
     findState.pattern = pattern;
     summary.textContent =
       env.total === 0
-        ? `No matches for "${pattern}".`
-        : `${env.total} match${env.total === 1 ? "" : "es"} for "${pattern}"`;
+        ? `No matches for "${pattern}"${classNote}.`
+        : `${env.total} match${env.total === 1 ? "" : "es"} for "${pattern}"${classNote}`;
     renderFindResults(env.matches);
   } catch (e) {
     summary.textContent = "Error: " + (e.message || String(e));
@@ -1130,6 +1315,7 @@ async function init() {
     if (meta) {
       state.file = meta;
       setFileStatus();
+      renderClassFilterOptions();
       const mobs = await api.mobs();
       state.mobs = mobs.mobs;
       renderMobList();
