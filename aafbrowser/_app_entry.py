@@ -127,11 +127,12 @@ def _run_with_webview(webview, url: str) -> None:
     webview.create_window(
         title="AAF Browser",
         url=url,
-        # Wider-than-default so the Tracks-view 3-column layout has room
-        # for the track-name column without the user having to resize
-        # the window or drag the splitter on first open.
-        width=1600,
-        height=960,
+        # Sized so the Tracks-view 3-column layout has room for the
+        # track-name and clip columns without the user having to resize
+        # the window or drag a splitter on first open. Inspector takes
+        # whatever's left (~520px at this width).
+        width=1400,
+        height=900,
         resizable=True,
         text_select=True,
         js_api=_make_bridge(webview),

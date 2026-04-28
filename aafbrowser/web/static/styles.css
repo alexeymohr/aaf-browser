@@ -23,11 +23,14 @@
   --row-h: 22px;
 
   /* Per-view column widths. JS splitter drag updates these inline on
-     <body> so they persist across re-renders within a session. */
-  --col-tracks: 240px;
-  --col-clips: 480px;
-  --col-mobs: 360px;
-  --col-cfb: 360px;
+     <body> so they persist across re-renders within a session. The
+     defaults favor the left + center panes (track list, clip tree)
+     so operator-meaningful info is visible without resizing; the
+     inspector takes whatever remains (1fr). */
+  --col-tracks: 280px;
+  --col-clips: 560px;
+  --col-mobs: 380px;
+  --col-cfb: 380px;
   --splitter: 4px;
 }
 
