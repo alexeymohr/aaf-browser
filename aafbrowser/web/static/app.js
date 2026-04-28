@@ -369,7 +369,15 @@ function renderInspectorObject(obj) {
       ? el("span", { class: "obj-name" }, obj.name)
       : null,
     obj.mob_id
-      ? el("span", { class: "obj-mob-id", title: obj.mob_id }, obj.mob_id)
+      ? el(
+          "span",
+          {
+            class: "obj-mob-id",
+            title: "click to copy: " + obj.mob_id,
+            onclick: () => copyToClipboard(obj.mob_id),
+          },
+          obj.mob_id
+        )
       : null,
   ].filter(Boolean));
   inspector.appendChild(header);
@@ -489,10 +497,7 @@ function populateTypedEnvelope(cell, v, pname) {
         `<${v.length} bytes${v.truncated ? ", truncated" : ""}>`));
       return;
     case "weakref":
-      cell.classList.add("weakref");
-      cell.appendChild(document.createTextNode(
-        `→ ${v.target_class}` +
-        (v.target_name ? ` "${v.target_name}"` : "")));
+      populateWeakRef(cell, v);
       return;
     case "aaf_object":
       // StrongRef nested object: inline expand.
@@ -545,10 +550,125 @@ function summarizeNested(obj) {
   return cls;
 }
 
-// Step 10 makes this clickable; for now it's just visual.
+function populateWeakRef(cell, v) {
+  cell.classList.add("weakref");
+  const summary = el(
+    "span",
+    { class: "expandable" },
+    `→ ${v.target_class}` +
+      (v.target_name ? ` "${v.target_name}"` : "") +
+      " ▶"
+  );
+  cell.appendChild(summary);
+  const detail = el("div", { class: "nested-obj", hidden: true });
+  cell.appendChild(detail);
+  let expanded = false;
+  summary.addEventListener("click", () => {
+    expanded = !expanded;
+    detail.hidden = !expanded;
+    summary.textContent =
+      `→ ${v.target_class}` +
+      (v.target_name ? ` "${v.target_name}"` : "") +
+      (expanded ? " ▼" : " ▶");
+    if (expanded && detail.childElementCount === 0) {
+      // Dictionary targets are not exposed as Mobs, so we render a small
+      // identifying panel rather than navigating.
+      const tbl = el("div", { class: "props-table" });
+      const rows = [
+        ["target_class", v.target_class || "?"],
+        ["target_name", v.target_name || ""],
+        ["target_auid", v.target_auid || ""],
+      ];
+      for (const [k, val] of rows) {
+        tbl.appendChild(el("div", { class: "prop-name" }, k));
+        tbl.appendChild(el("span", { class: "prop-type" }, "weakref"));
+        const vc = el("div", { class: "prop-value scalar" });
+        vc.textContent = val;
+        tbl.appendChild(vc);
+      }
+      detail.appendChild(tbl);
+    }
+  });
+}
+
 function renderMobIdBadge(urn) {
-  return el("span", { class: "badge mob-id", title: urn },
-    `${tailMobId(urn)}`);
+  // Clicking navigates the inspector and the left list.
+  return el(
+    "span",
+    {
+      class: "badge mob-id",
+      title: urn,
+      onclick: (ev) => {
+        ev.stopPropagation();
+        navigateToMobId(urn);
+      },
+    },
+    tailMobId(urn)
+  );
+}
+
+async function navigateToMobId(urn) {
+  const known = state.mobs.find((m) => m.mob_id === urn);
+  if (known) {
+    // Ensure the class section is open and the row is in view.
+    const row = document.querySelector(
+      `.mob-row[data-mob-id="${cssEscape(urn)}"]`
+    );
+    if (row) {
+      const details = row.closest("details.class-section");
+      if (details && !details.open) details.open = true;
+      row.scrollIntoView({ block: "nearest" });
+    }
+    selectMob(urn);
+    return;
+  }
+  // Reference points outside the eager index. Resolve via /api/resolve so
+  // we get class/name back, then load via /api/object directly.
+  try {
+    const r = await fetch("/api/resolve?ref=" + encodeURIComponent(urn));
+    if (!r.ok) {
+      showInspectorError(await apiError(r));
+      return;
+    }
+    const info = await r.json();
+    inspectorState.trail = [{
+      label: `${info.class}:${info.name || tailMobId(urn)} (orphan)`,
+      fetch: () => api.object({ mob_id: urn }),
+    }];
+    state.selected = null;
+    $$(".mob-row").forEach((row) => row.classList.remove("selected"));
+    await renderInspectorAt(0);
+  } catch (e) {
+    showInspectorError(e);
+  }
+}
+
+function copyToClipboard(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
+  } else {
+    fallbackCopy(text);
+  }
+}
+
+function fallbackCopy(text) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand("copy"); } catch (_) { /* ignore */ }
+  document.body.removeChild(ta);
+}
+
+function cssEscape(s) {
+  // CSS.escape may not exist in all environments; fall back to a
+  // hex-style escape on every non-alnum character.
+  if (typeof CSS !== "undefined" && CSS.escape) return CSS.escape(s);
+  return String(s).replace(/[^a-zA-Z0-9_-]/g, (c) =>
+    "\\" + c.charCodeAt(0).toString(16) + " "
+  );
 }
 
 function renderValueCell(v) {
