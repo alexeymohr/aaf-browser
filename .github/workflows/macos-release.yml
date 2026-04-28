@@ -1,0 +1,149 @@
+name: macOS release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write   # to attach the .dmg to the GitHub Release
+
+jobs:
+  build:
+    runs-on: macos-latest   # arm64 since late-2024
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[mac-build]'
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      # ---- code signing setup ----------------------------------------
+      # Required secrets (set in repo Settings -> Secrets and variables):
+      #   APPLE_DEVELOPER_ID_CERT_P12          base64 of the .p12 cert
+      #   APPLE_DEVELOPER_ID_CERT_PASSWORD     password for the .p12
+      #   APPLE_ID                             Apple ID email
+      #   APPLE_APP_PASSWORD                   app-specific password
+      #   APPLE_TEAM_ID                        10-char team identifier
+      #   CODESIGN_IDENTITY                    "Developer ID Application: Name (TEAMID)"
+      #
+      # If any are missing, the build still produces an ad-hoc-signed
+      # .dmg and skips notarization (so PRs and dev tag builds can run
+      # the workflow without all the secrets in place).
+      - name: Detect signing availability
+        env:
+          CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
+          CERT_P12: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [[ -n "$CODESIGN_IDENTITY" \
+                && -n "$CERT_P12" \
+                && -n "$CERT_PASSWORD" \
+                && -n "$APPLE_ID" \
+                && -n "$APPLE_APP_PASSWORD" \
+                && -n "$APPLE_TEAM_ID" ]]; then
+            echo "HAS_SIGNING=true" >> "$GITHUB_ENV"
+          else
+            echo "HAS_SIGNING=false" >> "$GITHUB_ENV"
+            echo "::warning::One or more signing secrets missing — building ad-hoc"
+          fi
+
+      - name: Import Developer ID certificate
+        if: env.HAS_SIGNING == 'true'
+        env:
+          CERT_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
+        run: |
+          # Temp keychain for the cert; deleted at workflow end.
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          # Decode + import the cert
+          CERT_FILE="$RUNNER_TEMP/cert.p12"
+          printf '%s' "$CERT_P12_BASE64" | base64 --decode -o "$CERT_FILE"
+          security import "$CERT_FILE" -P "$CERT_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          rm "$CERT_FILE"
+          # Add to keychain search list. Word-splitting on the
+          # existing-keychains list is intentional — `security
+          # list-keychain -s` takes multiple paths as separate args.
+          # shellcheck disable=SC2046
+          security list-keychain -d user -s "$KEYCHAIN_PATH" \
+            $(security list-keychains -d user | sed -e 's/"//g')
+          # Allow codesign to use the key without a password prompt
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
+
+      - name: Build .app + .dmg
+        env:
+          CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
+        run: bash packaging/macos/build.sh
+
+      - name: Locate built DMG
+        id: dmg
+        run: |
+          DMG="$(find dist -maxdepth 1 -name 'AAF-Browser-*-arm64.dmg' -print -quit)"
+          if [[ -z "$DMG" ]]; then
+            echo "no DMG produced under dist/" >&2
+            exit 1
+          fi
+          echo "path=$DMG" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$DMG")" >> "$GITHUB_OUTPUT"
+
+      - name: Notarize and staple
+        if: env.HAS_SIGNING == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          DMG_PATH: ${{ steps.dmg.outputs.path }}
+        run: |
+          set -euo pipefail
+          echo "Notarizing $DMG_PATH"
+          xcrun notarytool submit "$DMG_PATH" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple "$DMG_PATH"
+          xcrun stapler validate "$DMG_PATH"
+
+      - name: Compute prerelease flag
+        id: prerelease
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          case "$REF_NAME" in
+            *rc*|*beta*|*alpha*) echo "value=true"  >> "$GITHUB_OUTPUT" ;;
+            *)                   echo "value=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.dmg.outputs.path }}
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          prerelease: ${{ steps.prerelease.outputs.value }}
+
+      - name: Cleanup keychain
+        if: always() && env.HAS_SIGNING == 'true'
+        run: |
+          security delete-keychain "$RUNNER_TEMP/build.keychain-db" || true
