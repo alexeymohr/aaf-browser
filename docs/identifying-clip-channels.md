@@ -1,5 +1,18 @@
 # Identifying a clip's original record channel via AAF chain-walk
 
+## TL;DR
+
+The Pro Tools clip name does not identify the physical mic channel.
+The chain-walk described here does, with high accuracy, on Avid Media
+Composer AAFs from multi-camera reality and scripted workflows. It
+returns "no answer" rather than a wrong answer on Premiere Pro AAFs.
+
+The method has been validated on 50 AAFs across 16 shows
+(`docs/channel-method-corpus-validation.md`), including a ground-truth
+check against MatchGame slot names that explicitly encode the
+recorder channel: 48 of 52 such labels are recovered exactly; the 4
+disagreements look like editor mislabels rather than method failures.
+
 ## The problem
 
 In a multichannel field-recording workflow (Pro Tools timelines exported
@@ -56,6 +69,37 @@ The terminal pair `(camera SourceMob mob_id, PhysicalTrackNumber K)` is
 the unique-per-mic identifier. Any two clips with that same pair are
 from the same physical microphone.
 
+Corpus note: across multiple takes/episodes, the camera SourceMob
+`mob_id` rotates per recording (each card / each call sheet entry has
+its own camera mob), but the PhysicalTrackNumber for a given mic
+remains stable. So `(camera_mob_id, PTN)` is the per-take fingerprint
+and `PTN` alone — within a single recorder configuration — is the
+per-mic fingerprint. See "Real production reracks" below for what
+"single configuration" means in practice.
+
+## Range of applicability
+
+The chain-walk only works when the AAF actually contains the recorder
+source mobs. Validated workflow classes from the corpus run:
+
+| Authoring workflow | Recovers PTN | Notes |
+|---|---|---|
+| Avid Media Composer, multi-cam reality / game show | yes | Strongest case. Per-mic PTN is stable across episodes; `(camera_mob_id, PTN)` is per-take. |
+| Avid Media Composer, scripted episodic | yes | Per-actor lavs/booms come out clean (TBAS validation). |
+| Avid Media Composer with PT inserts (promos, music beds) | yes, with filter | Inserted assets terminate at non-recorder mobs; filter on terminal mob class + PTN > 0. |
+| Premiere Pro picture lock — stereo splits | partial | `_L`/`_R` channel identity recoverable via `Mono Audio Pan` parameter (0.0 vs 1.0); see `docs/premiere-aaf-channel-recovery.md`. |
+| Premiere Pro picture lock — multichannel polywav | **no** | Channel index is destroyed at import; siblings share name/descriptor/timestamps. Only mob_id differs, with no channel encoding. Use track-placement convention as a best-effort fallback. |
+| Pro Tools transit / template AAFs | n/a | Blank tracks — no clips to walk. |
+
+Cheap signals to detect "method does not apply" early:
+- Slot names match `^Audio\s+\d+(_[LR])?$`.
+- `Mono Audio Gain` operation defs registered (Premiere-specific).
+- All recovered PTNs are 0 or null across the file.
+
+When any of these holds, route to a filename-based classifier
+fallback rather than treating the chain-walk's null result as a
+positive signal.
+
 ## The algorithm
 
 1. **Find the editorial clip.** From a Pro Tools position, the clip is
@@ -85,7 +129,7 @@ from the same physical microphone.
    together with the terminal SourceMob's `mob_id`, is your channel
    identifier.
 
-## Two gotchas that bit us during validation
+## Three gotchas that bit us during validation
 
 Both have silently dropped channel information in earlier
 implementations:
@@ -129,6 +173,31 @@ snake_case `input_segments` accessor returns `[]` even when
 `InputSegments` (the AAF property) is non-empty. Read via
 `og.properties()` instead.
 
+### Gotcha 3 — A non-`SourceMob` terminal is not a recorder; do not read PTN from it
+
+The chain can legitimately terminate at a `CompositionMob` (an inserted
+audio asset like an MP3 promo or a music bed) or at an `OperationGroup`
+(a multi-input audio combiner / pan node). These are real editorial
+structure, not bugs. They are not recorder sources, and reading PTN
+from them is meaningless — typically you'll get `None` or `0`.
+
+```python
+# In the consumer code that decides whether to trust the result:
+def is_recorder_source(channel_id: ChannelId) -> bool:
+    return (
+        channel_id.terminal_reason in ("essence", "no_source_id", "broken_ref")
+        and channel_id.physical_track_number is not None
+        and int(channel_id.physical_track_number) > 0
+        # And, if you carry it, terminal mob_class == "SourceMob"
+    )
+```
+
+Across the validated corpus, the dominant cause of "this labeled mic
+track produced multiple distinct PTNs" was inserted non-recorder
+content (an MP3 promo on the editorial Host track) and OperationGroup
+combiners — not method failures. Filtering on terminal-state lifts
+convergence on rich-source shows to 90%+.
+
 ### Lesser gotchas
 
 - **Transitions overlap their neighbors.** When iterating a `Sequence`'s
@@ -168,10 +237,25 @@ import aaf2
 
 @dataclass(frozen=True)
 class ChannelId:
-    camera_mob_id: str    # URN of the terminal SourceMob (the camera roll)
+    camera_mob_id: str          # URN of the terminal mob
     camera_name: Optional[str]
     physical_track_number: Optional[int]
-    terminal_reason: str  # for diagnostics
+    terminal_reason: str        # for diagnostics
+    terminal_mob_class: str     # "SourceMob" for recorder; otherwise filter
+
+    @property
+    def is_recorder_source(self) -> bool:
+        """True iff this clip terminates at a recorder source with a
+        meaningful PhysicalTrackNumber. Non-recorder terminals (inserted
+        promos, OperationGroup combiners, missing PTN, PTN=0) all
+        return False — they should be excluded from per-mic
+        bucketing."""
+        return (
+            self.terminal_mob_class == "SourceMob"
+            and self.terminal_reason in ("essence", "no_source_id", "broken_ref")
+            and self.physical_track_number is not None
+            and int(self.physical_track_number) > 0
+        )
 
 
 def _slot_property(slot: Any, name: str) -> Any:
@@ -237,35 +321,43 @@ def channel_for_source_clip(f: aaf2.file.AAFFile, clip: Any,
         mob_id = cur_clip.mob_id
         slot_id = cur_clip.slot_id
         if mob_id is None or mob_id.int == 0:
-            return ChannelId("", None, None, "no_source_id")
+            return ChannelId("", None, None, "no_source_id", "")
         target_mob = f.content.mobs.get(mob_id)
         if target_mob is None:
-            return ChannelId(str(mob_id), None, None, "broken_ref")
+            return ChannelId(str(mob_id), None, None, "broken_ref", "")
         key = (str(mob_id), int(slot_id))
         if key in visited:
             return ChannelId(str(mob_id), getattr(target_mob, "name", None),
-                             None, "cycle")
+                             None, "cycle", type(target_mob).__name__)
         visited.add(key)
 
         target_slot = target_mob.slot_at(slot_id)
         if target_slot is None:
             return ChannelId(str(mob_id), getattr(target_mob, "name", None),
-                             None, "invalid_slot")
+                             None, "invalid_slot", type(target_mob).__name__)
 
         next_clip = _next_clip(target_slot.segment)
         if next_clip is None:
             # Terminal hop — read PTN from this slot.
+            seg_cls = type(target_slot.segment).__name__
+            reason = (
+                "operation_group" if seg_cls == "OperationGroup"
+                else "filler" if seg_cls == "Filler"
+                else "timecode" if seg_cls == "Timecode"
+                else "essence"
+            )
             return ChannelId(
                 camera_mob_id=str(mob_id),
                 camera_name=getattr(target_mob, "name", None) or None,
                 physical_track_number=_slot_property(target_slot,
                                                      "PhysicalTrackNumber"),
-                terminal_reason="essence",
+                terminal_reason=reason,
+                terminal_mob_class=type(target_mob).__name__,
             )
         cur_clip = next_clip
 
     return ChannelId(str(mob_id), getattr(target_mob, "name", None),
-                     None, "max_hops_reached")
+                     None, "max_hops_reached", type(target_mob).__name__)
 ```
 
 Usage:
@@ -276,8 +368,14 @@ with aaf2.open("session.aaf", "r") as f:
     # the timeline (unwrapped from track-level OperationGroup +
     # Sequence + per-clip OperationGroup).
     cid = channel_for_source_clip(f, editorial_clip)
-    print(cid.camera_name, cid.physical_track_number)
-    # e.g. -> "PW_310_ISO1_B" 1
+    if cid.is_recorder_source:
+        print(cid.camera_name, cid.physical_track_number)
+        # e.g. -> "PW_310_ISO1_B" 1
+    else:
+        # Non-recorder terminal (inserted asset, multi-input combiner,
+        # missing PTN). Do NOT use it as a per-mic key. Log/skip.
+        print("non-recorder terminal:", cid.terminal_reason,
+              "mob_class=", cid.terminal_mob_class)
 ```
 
 ## Locating the editorial clip from a timeline position
@@ -346,12 +444,70 @@ For every editorial clip discovered during AAF ingestion, store:
     "physical_track":     1,
     # Diagnostics
     "chain_terminal":     "essence",       # or cycle / broken_ref / etc.
+    "terminal_mob_class": "SourceMob",     # see Gotcha 3
+    "is_recorder_source": True,            # the gate for trusting (mob_id, PTN)
 }
 ```
 
 The sort key for "is this clip from the same mic as that one?" is the
-pair `(camera_mob_id, physical_track)`. Names, MasterMob bin labels,
-and any visible `-NN` suffix the bin shows can be ignored.
+pair `(camera_mob_id, physical_track)`, **but only on clips where
+`is_recorder_source == True`**. Clips with non-recorder terminals
+(inserted promos, multi-input combiners, Premiere placeholders) need a
+separate handling path; do not bucket them by PTN.
+
+Names, MasterMob bin labels, and any visible `-NN` suffix the bin shows
+can be ignored.
+
+## Three sub-100% convergence patterns to expect (not bugs)
+
+When you bin clips on a labeled mic track and find that they don't all
+produce the same PTN, the cause is almost always one of these three —
+all detectable from terminal metadata, none of them method failures.
+
+### 1. Inserted non-recorder audio assets
+
+Editors drop MP3 promos, music beds, and pickup VO onto mic-labeled
+tracks. These come into the AAF as their own `CompositionMob`s and the
+chain terminates there (not at a SourceMob). Filter via
+`terminal_mob_class == "SourceMob"`.
+
+Example: a CherriesWild "Host" track had 7 mic clips at PTN=1 plus one
+terminal at `CompositionMob 'Rebecca Riedy.mp3.new.01'`. The mp3 isn't
+a recorder source; the 7 mic clips all converged perfectly.
+
+### 2. OperationGroup combiners (multi-mic mix-down)
+
+Some tracks are populated with the output of an audio combiner —
+multiple mic inputs mixed to one stereo pair. The chain terminates at
+`terminal_reason == "operation_group"` because the walker refuses to
+silently pick one of multiple inputs. ~30% of all walk terminations
+across the corpus hit this.
+
+Lifting these requires dispatching one sub-walk per
+`OperationGroup.input_segment` and merging results — Phase 3 of
+aafbrowser flagged this as a known limitation. For TrackManager v1,
+either implement the sub-walk dispatch, or treat OG-terminated clips
+as "ambiguous" and log them.
+
+### 3. Real production reracks across episodes
+
+When the same mic-label maps to different PTNs across episodes of the
+same show, that is sometimes a real production change, not a bug. The
+clearest validated example: across 4 Password S3 episodes,
+`CONTESTANT 1` resolves to PTN=4 in 16 cases and PTN=6 in 13 cases —
+exactly matching the editor's own audio-map AAF, which labels this
+track `ISO 1 CH4/6-CONTESTANT 1`. Two different episode-day recording
+plans, both correct.
+
+CSgameshow exhibits a uniform off-by-one rerack for the Kids 1-5 mics
+between episode 1 and episodes 2/3 — `Kids 1` PTN=3 vs PTN=4, `Kids 2`
+PTN=4 vs PTN=5, etc. Same pattern: the production audio-channel
+assignment changed.
+
+A classifier should preserve and expose this rather than collapsing
+to one winner. The `(camera_mob_id, PTN)` per-clip-take fingerprint
+already does the right thing; just don't aggregate to "this label =
+this single PTN" without checking.
 
 ## Edge cases to surface as warnings, not silent drops
 
@@ -360,16 +516,27 @@ and any visible `-NN` suffix the bin shows can be ignored.
   AAF was exported from a partial bin.
 - `terminal_reason == "operation_group"` (multi-input) or
   `"multi_segment_sequence"` — editorial structure that the walker
-  refuses to silently descend. For TrackManager's purposes these are
-  rare and worth a log line.
-- `physical_track_number is None` after a clean terminal — should not
-  happen if Gotcha 1 is handled correctly. If it ever surfaces, the
-  walker is reading the wrong slot's properties; the bug is real and
-  channel info is lost.
+  refuses to silently descend. ~30% of all walk terminations on the
+  validation corpus land here. Either implement sub-walk dispatch
+  (recommended) or log and treat as "ambiguous".
+- `terminal_mob_class != "SourceMob"` — the chain terminated at a
+  CompositionMob (inserted asset). PTN read here is meaningless; do
+  not bucket by it. See Gotcha 3.
+- `physical_track_number is None` after a clean SourceMob terminal —
+  should not happen if Gotcha 1 is handled correctly. If it ever
+  surfaces against an Avid AAF, the walker is reading the wrong slot's
+  properties. (Against Premiere AAFs, this is the expected behavior;
+  see "Range of applicability".)
+- `physical_track_number == 0` everywhere across a file — usually
+  means the AAF was authored by Premiere or has been re-rendered
+  through a tool that strips PhysicalTrackNumber. Detect early and
+  route to a different classifier.
 - Two SourceMobs with the same `name` — keep using `mob_id`. Don't
   collapse channels by name.
 
-## Validation against PWD_310
+## Validation
+
+### Original PWD_310 validation (Phase 3 of aafbrowser)
 
 The seven tracks in the table at the top of this doc were each verified
 by:
@@ -387,3 +554,50 @@ by:
 
 The procedure is deterministic and fast (sub-millisecond per clip after
 the AAF is open).
+
+### Corpus validation (50 AAFs, 16 shows)
+
+Full report: `docs/channel-method-corpus-validation.md`. Headlines:
+
+- **MatchGame ground truth.** The editor named tracks
+  `<MIC>-ISO<recorder>-<channel>`, e.g. `MARTY-ISO1-1`,
+  `CELEB 4-ISO3-1`, `AUD R-ISO4-5`. We can parse the channel out of the
+  name and compare. Across 4 MatchGame AAFs, **48/52 = 92%** of these
+  encoded labels are recovered exactly. The 4 disagreements are all
+  `MUSIC L-ISO4-2` / `MUSIC R-ISO4-3` consistently resolving to PTN=1
+  and PTN=2 — the editor labeled them ISO4-2/3 but the chain finds a
+  different recorder; almost certainly editor mislabel of the music
+  feed.
+
+- **Cross-AAF stability.** For shows with the same mic-label across
+  multiple AAFs:
+
+  | Show | Labels in ≥ 2 AAFs | Stable across AAFs |
+  |---|---|---|
+  | Password_S3 | 9 | **9/9 = 100%** |
+  | MatchGame | 20 | **20/20 = 100%** |
+  | TKTS | 4 | **4/4 = 100%** |
+  | CSgameshow | 11 | 4/11 (rest are real off-by-one reracks) |
+
+- **Password S3 self-consistency.** The audio-map AAF
+  (`PW_301_AUDIO_MAP_A AND B GAMES.aaf`) contains slots like
+  `ISO 1 CH1-HOST`, `ISO 1 CH2-JIMMY`, `ISO 6 CH5-STUDIO AUD L`. Every
+  one of those 9 explicit mappings was independently recovered by the
+  chain-walk against a different episode's AAF. The two `CH4/6` and
+  `CH5/7` markers correctly predict the bimodal `CONTESTANT 1` and
+  `CONTESTANT 2` distributions across the four episode AAFs.
+
+- **Failure modes.** All explained, none are method-failures: inserted
+  non-recorder assets (CompositionMob terminal), OperationGroup
+  combiners (multi-mic mix-down), legitimate stereo mics (e.g. camera
+  CamMic recorded to channels 3 AND 4), real production reracks
+  across episodes.
+
+- **Premiere AAFs (CasaLuxe, SavingJones).** All recovered PTNs are 0
+  / null — the upstream chain has no PhysicalTrackNumber. Method
+  correctly returns "no answer" rather than fabricating one. Detect
+  via the cheap signals listed under "Range of applicability" and use
+  a filename-based fallback.
+
+The Phase-3 production-test on Password 310 was not a fluke. It was
+representative.
