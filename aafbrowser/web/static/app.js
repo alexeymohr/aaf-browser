@@ -200,9 +200,21 @@ async function loadAafFile(path) {
   findState.classes = new Set();
   setFileStatus();
   renderClassFilterOptions();
+  syncWindowTitle();
   const mobs = await api.mobs();
   state.mobs = mobs.mobs;
   renderMobList();
+}
+
+// Mirror the open file's basename into document.title. pywebview's
+// WKWebView reflects document.title to the macOS window title; in a
+// regular browser the same title shows up in the tab. Either way, a
+// glance at the title bar tells the user which AAF they're inspecting.
+function syncWindowTitle() {
+  const base = state.file && state.file.path
+    ? state.file.path.split("/").pop()
+    : null;
+  document.title = base ? `AAF Browser — ${base}` : "AAF Browser";
 }
 
 // Open click: try the native picker first. If the platform doesn't
@@ -270,6 +282,7 @@ function wireTopbar() {
     inspectorState.current = null;
     findState.classes = new Set();
     setFileStatus();
+    syncWindowTitle();
     renderMobList();
     renderClassFilterOptions();
     $("#cfb-tree").replaceChildren();
@@ -1394,6 +1407,7 @@ async function init() {
       state.file = meta;
       setFileStatus();
       renderClassFilterOptions();
+      syncWindowTitle();
       const mobs = await api.mobs();
       state.mobs = mobs.mobs;
       renderMobList();
