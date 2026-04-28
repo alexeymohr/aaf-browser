@@ -8,8 +8,9 @@ like *"is this metadata actually present in the file or am I being lied to
 by some intermediate tool?"*
 
 See [docs/PROJECT_OVERVIEW.md](docs/PROJECT_OVERVIEW.md) for context, and
-the briefs at [docs/phase1-brief.md](docs/phase1-brief.md) (CLI) and
-[docs/phase2-brief.md](docs/phase2-brief.md) (web GUI).
+the briefs at [docs/phase1-brief.md](docs/phase1-brief.md) (CLI),
+[docs/phase2-brief.md](docs/phase2-brief.md) (web GUI), and
+[docs/phase3-brief.md](docs/phase3-brief.md) (chain-walk + class-filtered find).
 
 ## Install
 
@@ -161,9 +162,17 @@ aafbrowser find session.aaf --pattern 'MobID' --in names
 # Limit to the CFB layer (storage / stream names + class_ids)
 aafbrowser find session.aaf --pattern 'MasterMob' --layer cfb
 
+# Restrict the AAF-layer walk to one or more Mob classes (repeatable)
+aafbrowser find session.aaf --pattern KEKE --class CompositionMob
+aafbrowser find session.aaf --pattern host --class CompositionMob --class MasterMob
+
 # JSON output (one match per line)
 aafbrowser find session.aaf --pattern '(?i)channel' --json
 ```
+
+The `--class` filter materially speeds up search on large sessions: on a
+4,648-Mob iso AAF, `--class CompositionMob` cuts a 7 s search to 3.5 s
+(50% off); `--class MasterMob` cuts it to 1.7 s (76% off).
 
 This is the validation command for questions like *"does this AAF contain
 any property or stream that distinguishes physical recorder channels?"*.
@@ -173,6 +182,45 @@ Example pattern targeting iso-recorder identity:
 aafbrowser find samples/password.aaf \
   --pattern '(?i)channel|chan_?id|physicaltrack|isolat|cam(era)?_?\d|mic_?\d'
 ```
+
+### `aafbrowser walk <file.aaf> --mob-id <id> | --path <path>`
+
+Walk the SourceClip chain hop-by-hop, returning the per-hop
+`(mob_class, mob_name, slot_id, segment_class, physical_track_number,
+edit_rate, terminal, terminal_reason)` tuple. The deepest-named-mob in
+the chain is typically the original capture (the WAV file, the camera
+clip), which answers the iso-channel question for any clip.
+
+```sh
+# From a Mob (slot defaults to the first; override with --slot)
+aafbrowser walk session.aaf --mob-id "urn:smpte:umid:..."
+aafbrowser walk session.aaf --mob-id "urn:smpte:umid:..." --slot 2
+
+# From a property path (e.g. land directly on a SourceClip)
+aafbrowser walk session.aaf --path "Mobs/<urn>/Slots/0/Segment"
+
+# Bound the walk depth (default 64; clipped chains terminate
+# with reason "max_hops_reached")
+aafbrowser walk session.aaf --mob-id "..." --max-hops 4
+
+# Machine-readable
+aafbrowser walk session.aaf --mob-id "..." --json
+```
+
+Sample output (3-hop chain — MasterMob → SourceMob → SourceMob):
+
+```
+  [0] MasterMob 'PW VO 310 B Round 1.wav.new.05' slot=1 segment=SourceClip edit=30000/1001
+  [1] SourceMob slot=1 segment=SourceClip edit=30000/1001
+* [2] SourceMob 'PW VO 310 B Round 1.wav' slot=1 segment=SourceClip edit=30000/1001  -- terminal: no_source_id
+```
+
+Terminal reasons cover every non-chainable shape: `essence`,
+`no_source_id`, `broken_ref`, `cycle`, `filler`, `timecode`,
+`essence_group`, `pulldown`, `operation_group`,
+`multi_segment_sequence`, `empty_sequence`, `max_hops_reached`,
+`invalid_slot`, `non_clip_segment:<class>`. The walker is cycle-safe
+(visited `(mob_id, slot_id)` set).
 
 ## Type-tagged JSON
 
@@ -211,7 +259,8 @@ aafbrowser/
 │   ├── cfb.py      # CFB walker (uses pyaaf2's f.cfb, NOT olefile)
 │   ├── aaf.py      # AAF object graph walker with cycle detection
 │   ├── serialize.py # Property values -> JSON-friendly with type tags
-│   └── resolver.py # MobID / path / regex search
+│   ├── resolver.py # MobID / path / regex search (with mob_class filter)
+│   └── chain.py    # Multi-hop SourceClip chain walker
 ├── cli/            # Click-based CLI (`aafbrowser` console script)
 └── web/            # Phase 2: Flask app + vanilla JS GUI
     ├── app.py      # Routes under /api
