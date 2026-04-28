@@ -325,22 +325,37 @@ dialog#open-dialog .error {
   user-select: all;
 }
 
+/*
+ * Property table layout: each row is its own flex container so opening a
+ * nested expansion in one row never reflows other rows. Name and type
+ * columns are fixed widths so the visual table alignment stays
+ * consistent; the value column extends rightward as needed and the
+ * inspector pane scrolls horizontally.
+ */
 .props-table {
-  display: grid;
-  grid-template-columns: minmax(160px, max-content) auto auto;
-  column-gap: 12px;
-  row-gap: 4px;
   font-family: var(--mono);
   font-size: 12px;
-  align-items: baseline;
-  /* Each nested table sizes to its content width — long values cause the
-     parent inspector to scroll horizontally rather than wrapping each
-     character onto its own line. */
-  width: max-content;
-  min-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start; /* don't stretch rows to widest sibling */
 }
-.props-table .prop-name { color: var(--fg); white-space: nowrap; }
+.props-table .prop-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  /* No width:100% — each row is intrinsic width, so wide nested content
+     in row N doesn't pull other rows wider. */
+}
+.props-table .prop-name {
+  flex: 0 0 220px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg);
+}
 .props-table .prop-type {
+  flex: 0 0 96px;
   font-size: 10.5px;
   padding: 0 5px;
   border-radius: 2px;
@@ -348,10 +363,14 @@ dialog#open-dialog .error {
   color: var(--fg-muted);
   border: 1px solid var(--border);
   white-space: nowrap;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .props-table .prop-value {
+  flex: 0 0 auto;
+  min-width: 0;
   white-space: pre-wrap;
-  overflow-wrap: anywhere;
   color: var(--fg);
 }
 .props-table .prop-value.scalar { color: #c9d1d9; }
@@ -366,7 +385,6 @@ dialog#open-dialog .error {
 .expandable:hover { text-decoration: underline; }
 
 .nested-obj {
-  grid-column: 1 / -1;
   margin: 4px 0 8px 14px;
   padding-left: 12px;
   border-left: 2px solid var(--border-strong);

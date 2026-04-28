@@ -474,11 +474,11 @@ function showCfbStorageDetail(node) {
     ["streams", String((node.streams || []).length)],
   ];
   for (const [k, v] of rows) {
-    tbl.appendChild(el("div", { class: "prop-name" }, k));
-    tbl.appendChild(el("span", { class: "prop-type" }, "cfb"));
+    const nameEl = el("div", { class: "prop-name", title: k }, k);
+    const typeEl = el("span", { class: "prop-type" }, "cfb");
     const vc = el("div", { class: "prop-value scalar" });
     vc.textContent = v;
-    tbl.appendChild(vc);
+    tbl.appendChild(el("div", { class: "prop-row" }, [nameEl, typeEl, vc]));
   }
   inspector.appendChild(tbl);
 }
@@ -672,25 +672,21 @@ function renderInspectorObject(obj) {
     return;
   }
   for (const pname of propNames) {
-    const value = props[pname];
-    const { typeBadge, valueCell } = renderProperty(pname, value);
-    table.appendChild(el("div", { class: "prop-name" }, pname));
-    table.appendChild(typeBadge);
-    table.appendChild(valueCell);
+    table.appendChild(renderPropertyRow(pname, props[pname]));
   }
   inspector.appendChild(table);
 }
 
-function renderProperty(pname, value) {
-  // value is whatever core.serialize_property emitted: a primitive, a
-  // typed envelope ({_type: rational | datetime | auid | mobid | bytes |
-  // weakref | aaf_object | aaf_object_cycle}), an array (vector/set), or
-  // null.
-  let typeName = describeType(value);
-  const typeBadge = el("span", { class: "prop-type" }, typeName);
-  const valueCell = el("div", { class: "prop-value" });
-  populateValue(valueCell, value, pname);
-  return { typeBadge, valueCell };
+function renderPropertyRow(pname, value) {
+  // One row = one independent flex container. Name/type cells are
+  // fixed-width so rows align vertically; value cell is auto-width and
+  // grows rightward without affecting siblings.
+  const typeName = describeType(value);
+  const nameEl = el("div", { class: "prop-name", title: pname }, pname);
+  const typeEl = el("span", { class: "prop-type", title: typeName }, typeName);
+  const valueEl = el("div", { class: "prop-value" });
+  populateValue(valueEl, value, pname);
+  return el("div", { class: "prop-row" }, [nameEl, typeEl, valueEl]);
 }
 
 function describeType(v) {
@@ -809,15 +805,10 @@ function populateNestedObject(cell, obj, pname) {
     host.hidden = !expanded;
     summary.textContent = summarizeNested(obj) + (expanded ? " ▼" : " ▶");
     if (expanded && host.childElementCount === 0) {
-      // Render the nested object's properties inline as a fresh table
       const tbl = el("div", { class: "props-table" });
       const props = obj.properties || {};
       for (const pname2 of Object.keys(props)) {
-        const { typeBadge, valueCell } =
-          renderProperty(pname2, props[pname2]);
-        tbl.appendChild(el("div", { class: "prop-name" }, pname2));
-        tbl.appendChild(typeBadge);
-        tbl.appendChild(valueCell);
+        tbl.appendChild(renderPropertyRow(pname2, props[pname2]));
       }
       host.appendChild(tbl);
     }
@@ -861,11 +852,11 @@ function populateWeakRef(cell, v) {
         ["target_auid", v.target_auid || ""],
       ];
       for (const [k, val] of rows) {
-        tbl.appendChild(el("div", { class: "prop-name" }, k));
-        tbl.appendChild(el("span", { class: "prop-type" }, "weakref"));
+        const nameEl = el("div", { class: "prop-name", title: k }, k);
+        const typeEl = el("span", { class: "prop-type" }, "weakref");
         const vc = el("div", { class: "prop-value scalar" });
         vc.textContent = val;
-        tbl.appendChild(vc);
+        tbl.appendChild(el("div", { class: "prop-row" }, [nameEl, typeEl, vc]));
       }
       detail.appendChild(tbl);
     }
@@ -1032,22 +1023,28 @@ function renderFindResults(matches) {
 
 async function jumpToMatch(m) {
   if (m.layer === "aaf") {
-    // m.path is a slash-separated property path from f.content. The first
-    // two segments are typically `Mobs/<urn>`. Pull the URN out and
-    // navigate to that Mob; the remaining segments are useful context for
-    // the breadcrumb and we surface them in the trail label.
+    // core.find_in_aaf paths use integer indices for set/vector children,
+    // e.g. `Mobs/2155/Slots/0/PhysicalTrackNumber`. Translate the Mobs
+    // index into the URN via the eager Mob list (same iteration order
+    // server-side) so we can navigate to the right row.
     const parts = m.path.split("/").filter(Boolean);
     if (parts.length >= 2 && parts[0] === "Mobs") {
-      const urn = parts[1];
+      let urn = parts[1];
+      if (/^\d+$/.test(urn)) {
+        const idx = parseInt(urn, 10);
+        if (idx >= 0 && idx < state.mobs.length) {
+          urn = state.mobs[idx].mob_id;
+        }
+      }
       const remaining = parts.slice(2);
-      // Activate AAF tab
       activateTab("aaf");
       await navigateToMobId(urn);
       if (remaining.length) {
         const trailLabel =
           inspectorState.trail[0]?.label || `Mob:${tailMobId(urn)}`;
-        // Re-set breadcrumb to include the deeper path as a non-clickable
-        // text trail; future improvement: walk and fetch each level.
+        // Re-set breadcrumb to show the deeper path as muted context.
+        // Future improvement: walk and fetch each level so each segment
+        // is clickable.
         $("#breadcrumb").replaceChildren(
           el("span", { class: "crumb head" }, trailLabel),
           el("span", { class: "sep" }, "/"),
@@ -1056,7 +1053,7 @@ async function jumpToMatch(m) {
       }
       return;
     }
-    // Non-mob AAF path (rare). Resolve directly via /api/object?path=
+    // Non-mob AAF path (rare). Try to resolve directly via /api/object.
     activateTab("aaf");
     inspectorState.trail = [{
       label: m.path,
