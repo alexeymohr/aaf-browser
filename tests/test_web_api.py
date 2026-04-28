@@ -169,3 +169,121 @@ def test_object_both_args_400(client, two_mob_aaf):
 def test_object_when_no_file_open(client):
     r = client.get("/api/object?mob_id=abc")
     assert r.status_code == 409
+
+
+# --- /cfb/tree ---
+
+
+def test_cfb_tree_default_filters_metadict(client, minimal_aaf):
+    client.post("/api/open", json={"path": str(minimal_aaf)})
+    r = client.get("/api/cfb/tree")
+    assert r.status_code == 200
+    j = r.get_json()
+    tree = j["tree"]
+    assert tree["_type"] == "cfb_storage"
+    # Default: a marker placeholder appears, but the full subtree does not
+    direct = [s.get("name") for s in tree["storages"]]
+    assert "MetaDictionary-1" not in direct
+    markers = [s for s in tree["storages"] if s.get("_type") == "cfb_metadict_filtered"]
+    assert len(markers) == 1
+
+
+def test_cfb_tree_include_metadict(client, minimal_aaf):
+    client.post("/api/open", json={"path": str(minimal_aaf)})
+    r = client.get("/api/cfb/tree?include_metadict=1")
+    j = r.get_json()
+    direct = [s.get("name") for s in j["tree"]["storages"]]
+    assert "MetaDictionary-1" in direct
+
+
+def test_cfb_tree_decorates_class_name(client, minimal_aaf):
+    client.post("/api/open", json={"path": str(minimal_aaf)})
+    r = client.get("/api/cfb/tree?include_metadict=1")
+    tree = r.get_json()["tree"]
+    md = next(s for s in tree["storages"] if s.get("name") == "MetaDictionary-1")
+    # MetaDictionary class_id decodes to "MetaDictionary"
+    assert md["class_id"] is not None
+    assert md["class_name"] == "MetaDictionary"
+
+
+def test_cfb_tree_no_file_open(client):
+    r = client.get("/api/cfb/tree")
+    assert r.status_code == 409
+
+
+# --- /cfb/stream ---
+
+
+def test_cfb_stream_returns_hex_and_ascii(client, minimal_aaf):
+    client.post("/api/open", json={"path": str(minimal_aaf)})
+    # Find a stream we can target via the tree response
+    r = client.get("/api/cfb/tree?include_metadict=1")
+    tree = r.get_json()["tree"]
+
+    def find_stream(node):
+        for st in node.get("streams", []):
+            if st.get("byte_size", 0) >= 16 and st.get("_type") != "cfb_run_collapsed":
+                return st["path"]
+        for s in node.get("storages", []):
+            p = find_stream(s)
+            if p:
+                return p
+        return None
+
+    stream_path = find_stream(tree)
+    assert stream_path
+
+    r = client.get(f"/api/cfb/stream?path={stream_path}&length=16")
+    assert r.status_code == 200
+    j = r.get_json()
+    assert j["path"] == stream_path
+    assert j["length"] == 16
+    assert isinstance(j["hex"], list) and isinstance(j["ascii"], list)
+    assert len(j["hex"]) == len(j["ascii"]) == 1
+    # 16 bytes of hex => 16 pairs separated by spaces
+    assert j["hex"][0].count(" ") == 15
+
+
+def test_cfb_stream_offset_and_truncation(client, minimal_aaf):
+    client.post("/api/open", json={"path": str(minimal_aaf)})
+    # Use a known-large stream
+    r = client.get("/api/cfb/tree?include_metadict=1")
+    tree = r.get_json()["tree"]
+
+    def find_big_stream(node):
+        for st in node.get("streams", []):
+            if st.get("byte_size", 0) >= 64 and st.get("_type") != "cfb_run_collapsed":
+                return st["path"], st["byte_size"]
+        for s in node.get("storages", []):
+            res = find_big_stream(s)
+            if res:
+                return res
+        return None
+
+    stream_path, total = find_big_stream(tree)
+    assert total >= 64
+    r = client.get(
+        f"/api/cfb/stream?path={stream_path}&offset=0&length=8"
+    )
+    j = r.get_json()
+    assert j["offset"] == 0
+    assert j["length"] == 8
+    assert j["byte_size"] == total
+    assert j["truncated"] is True
+
+
+def test_cfb_stream_unknown_path_404(client, minimal_aaf):
+    client.post("/api/open", json={"path": str(minimal_aaf)})
+    r = client.get("/api/cfb/stream?path=/no/such/stream")
+    assert r.status_code == 404
+
+
+def test_cfb_stream_bad_offset_400(client, minimal_aaf):
+    client.post("/api/open", json={"path": str(minimal_aaf)})
+    r = client.get("/api/cfb/stream?path=/x&offset=abc")
+    assert r.status_code == 400
+
+
+def test_cfb_stream_no_file_open(client):
+    r = client.get("/api/cfb/stream?path=/x")
+    assert r.status_code == 409

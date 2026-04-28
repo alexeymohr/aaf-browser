@@ -22,6 +22,7 @@ from typing import Any, Callable
 from flask import Flask, jsonify, request
 
 from aafbrowser.core import aaf as aaf_walker
+from aafbrowser.core import cfb as cfb_walker
 from aafbrowser.core import resolver as resolver_mod
 
 from . import state as state_mod
@@ -54,6 +55,53 @@ def _err(code: int, error: str, detail: Any = None):
 def _internal(exc: Exception):
     _logger.exception("internal error")
     return _err(500, "internal", str(exc))
+
+
+def _class_name_for_auid(handle: Any, class_id_str: str | None) -> str | None:
+    """
+    Decode a CFB storage class_id to its AAF class name via the
+    metadictionary. Returns None when not registered (e.g. private
+    extensions). Caller must hold the state lock.
+    """
+    if not class_id_str:
+        return None
+    try:
+        from aaf2.auid import AUID
+
+        cd = handle.metadict.classdefs_by_auid.get(AUID(class_id_str))
+        return cd.class_name if cd is not None else None
+    except Exception:
+        return None
+
+
+def _decorate_cfb_tree(node: dict[str, Any], handle: Any) -> dict[str, Any]:
+    """
+    Walk the cfb_tree output and add a `class_name` field next to each
+    `class_id`. Mutates and returns `node`.
+    """
+    if not isinstance(node, dict):
+        return node
+    if "class_id" in node:
+        node["class_name"] = _class_name_for_auid(handle, node.get("class_id"))
+    for key in ("storages", "streams"):
+        children = node.get(key)
+        if isinstance(children, list):
+            for child in children:
+                _decorate_cfb_tree(child, handle)
+    return node
+
+
+def _format_hex_ascii(data: bytes, width: int = 16) -> tuple[list[str], list[str]]:
+    """Two parallel lists: hex rows and ASCII rows. ASCII uses '.' for non-print."""
+    hex_rows: list[str] = []
+    ascii_rows: list[str] = []
+    for i in range(0, len(data), width):
+        chunk = data[i : i + width]
+        hex_rows.append(" ".join(f"{b:02x}" for b in chunk))
+        ascii_rows.append(
+            "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
+        )
+    return hex_rows, ascii_rows
 
 
 def _require_open(fn: Callable):
@@ -175,3 +223,61 @@ def _register_routes(app: Flask) -> None:
                 return _internal(exc)
 
         return jsonify({"sha256": sha, "object": serial})
+
+    @app.get("/api/cfb/tree")
+    @_require_open
+    def api_cfb_tree():
+        include_metadict = request.args.get("include_metadict") in ("1", "true", "yes")
+        with state_mod.state_lock():
+            if not state_mod.is_open():
+                return _err(409, "no_file_open")
+            handle = state_mod._state.handle
+            sha = state_mod._state.sha256
+            try:
+                tree = cfb_walker.cfb_tree(handle, include_metadict=include_metadict)
+                _decorate_cfb_tree(tree, handle)
+            except Exception as exc:
+                return _internal(exc)
+        return jsonify({"sha256": sha, "tree": tree})
+
+    @app.get("/api/cfb/stream")
+    @_require_open
+    def api_cfb_stream():
+        path = request.args.get("path")
+        if not path:
+            return _err(400, "bad_request", "missing 'path'")
+        try:
+            offset = int(request.args.get("offset", "0"))
+            length = int(request.args.get("length", str(cfb_walker.DEFAULT_HEX_PREVIEW)))
+        except ValueError:
+            return _err(400, "bad_request", "offset and length must be integers")
+        if offset < 0 or length < 0:
+            return _err(400, "bad_request", "offset and length must be non-negative")
+
+        with state_mod.state_lock():
+            if not state_mod.is_open():
+                return _err(409, "no_file_open")
+            handle = state_mod._state.handle
+            sha = state_mod._state.sha256
+            try:
+                data, info = cfb_walker.read_stream_bytes(
+                    handle, path, offset=offset, length=length
+                )
+            except FileNotFoundError as exc:
+                return _err(404, "not_found", str(exc))
+            except Exception as exc:
+                return _internal(exc)
+
+        hex_rows, ascii_rows = _format_hex_ascii(data)
+        return jsonify(
+            {
+                "sha256": sha,
+                "path": info["path"],
+                "byte_size": info["total_size"],
+                "offset": info["offset"],
+                "length": info["read_length"],
+                "truncated": info["truncated"],
+                "hex": hex_rows,
+                "ascii": ascii_rows,
+            }
+        )
