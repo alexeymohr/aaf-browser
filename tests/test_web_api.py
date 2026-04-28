@@ -84,3 +84,88 @@ def test_index_returns_503_when_no_static_built(client):
     # accidentally meaningful in the other direction; for now we assert
     # one of the two valid outcomes.
     assert r.status_code in (200, 503)
+
+
+# --- /mobs ---
+
+
+def test_mobs_lists_all(client, two_mob_aaf):
+    client.post("/api/open", json={"path": str(two_mob_aaf)})
+    r = client.get("/api/mobs")
+    assert r.status_code == 200
+    j = r.get_json()
+    assert j["total"] == 2
+    assert all(set(m.keys()) >= {"mob_id", "class", "name", "slot_count"}
+               for m in j["mobs"])
+
+
+def test_mobs_filter_by_class(client, two_mob_aaf):
+    client.post("/api/open", json={"path": str(two_mob_aaf)})
+    r = client.get("/api/mobs?class=MasterMob")
+    assert r.status_code == 200
+    j = r.get_json()
+    assert j["total"] == 2  # both fixture mobs are MasterMobs
+    r = client.get("/api/mobs?class=SourceMob")
+    assert r.get_json()["total"] == 0
+
+
+def test_mobs_filter_by_name_substring(client, two_mob_aaf):
+    client.post("/api/open", json={"path": str(two_mob_aaf)})
+    r = client.get("/api/mobs?name_contains=Host")
+    j = r.get_json()
+    assert j["total"] == 1
+    assert "Host" in j["mobs"][0]["name"]
+
+
+def test_mobs_when_no_file_open(client):
+    r = client.get("/api/mobs")
+    assert r.status_code == 409
+    assert r.get_json()["error"] == "no_file_open"
+
+
+# --- /object ---
+
+
+def test_object_by_mob_id(client, two_mob_aaf):
+    client.post("/api/open", json={"path": str(two_mob_aaf)})
+    mobs = client.get("/api/mobs").get_json()["mobs"]
+    target_id = mobs[0]["mob_id"]
+    r = client.get(f"/api/object?mob_id={target_id}")
+    assert r.status_code == 200
+    j = r.get_json()
+    assert j["object"]["_type"] == "aaf_object"
+    assert j["object"]["class"] == "MasterMob"
+
+
+def test_object_by_path(client, minimal_aaf):
+    client.post("/api/open", json={"path": str(minimal_aaf)})
+    mobs = client.get("/api/mobs").get_json()["mobs"]
+    urn = mobs[0]["mob_id"]
+    r = client.get(f"/api/object?path=Mobs/{urn}/Slots/0/Segment")
+    assert r.status_code == 200
+    j = r.get_json()
+    assert j["object"]["class"] == "Sequence"
+
+
+def test_object_unknown_mob_id_404(client, two_mob_aaf):
+    client.post("/api/open", json={"path": str(two_mob_aaf)})
+    r = client.get("/api/object?mob_id=not-a-mob")
+    assert r.status_code == 404
+    assert r.get_json()["error"] == "not_found"
+
+
+def test_object_missing_args_400(client, two_mob_aaf):
+    client.post("/api/open", json={"path": str(two_mob_aaf)})
+    r = client.get("/api/object")
+    assert r.status_code == 400
+
+
+def test_object_both_args_400(client, two_mob_aaf):
+    client.post("/api/open", json={"path": str(two_mob_aaf)})
+    r = client.get("/api/object?mob_id=foo&path=bar")
+    assert r.status_code == 400
+
+
+def test_object_when_no_file_open(client):
+    r = client.get("/api/object?mob_id=abc")
+    assert r.status_code == 409
