@@ -13,6 +13,7 @@ license = { text = "MIT" }
 dependencies = [
     "pyaaf2>=1.7.1",
     "click>=8.1,<8.4",
+    "flask>=3.0,<3.2",
 ]
 
 [project.optional-dependencies]
