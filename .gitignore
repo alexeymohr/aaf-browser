@@ -28,3 +28,7 @@ htmlcov/
 .idea/
 .vscode/
 *.swp
+
+# macOS bundle build artifacts
+packaging/macos/icon.icns
+packaging/macos/icon.iconset/
