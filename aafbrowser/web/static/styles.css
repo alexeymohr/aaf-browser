@@ -722,18 +722,23 @@ body.view-cfb .view-cfb-only { display: flex; }
 }
 
 .breadcrumb {
-  padding: 8px 14px;
+  padding: 6px 14px;
   font-family: var(--mono);
   font-size: 12px;
   color: var(--fg-muted);
   background: var(--bg-elev);
   border-bottom: 1px solid var(--border);
-  white-space: nowrap;
-  overflow-x: auto;
-  height: 32px;
+  /* Soft-wrap long selection paths instead of scrolling a single
+     line. Deep tree-node labels (e.g. TaggedValueAttributeList[0]
+     TaggedValue "_IMPORTDISKLAB") get unmanageably long; wrapping
+     keeps them readable without forcing the user to scroll. */
   display: flex;
-  align-items: center;
-  gap: 6px;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  min-height: 32px;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 .breadcrumb .crumb { cursor: pointer; }
 .breadcrumb .crumb:hover { color: var(--accent); }
