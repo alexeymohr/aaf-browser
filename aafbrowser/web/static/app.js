@@ -78,6 +78,18 @@ const api = {
     if (!r.ok) throw await apiError(r);
     return r.json();
   },
+  async pickFile() {
+    // Returns {path: string|null} on 200, throws on 501 / 5xx so the
+    // caller can fall back to the text-paste dialog.
+    const r = await fetch("/api/pick_file", { method: "POST" });
+    if (r.status === 501) {
+      const err = new Error("native picker unavailable");
+      err.status = 501;
+      throw err;
+    }
+    if (!r.ok) throw await apiError(r);
+    return r.json();
+  },
   async object({ mob_id, path }) {
     const qs = mob_id
       ? "mob_id=" + encodeURIComponent(mob_id)
@@ -161,8 +173,55 @@ function openDialog() {
   setTimeout(() => $("#open-path").focus(), 0);
 }
 
+// Load an AAF by path: hit /api/open, reset all per-file UI state,
+// fetch the Mob index. Used by both the native picker and the
+// text-paste fallback dialog.
+async function loadAafFile(path) {
+  const meta = await api.open(path);
+  state.file = meta;
+  state.selected = null;
+  cfbState.tree = null;
+  cfbState.selectedPath = null;
+  cfbState.expanded = new Set();
+  inspectorState.trail = [];
+  inspectorState.current = null;
+  findState.classes = new Set();
+  setFileStatus();
+  renderClassFilterOptions();
+  const mobs = await api.mobs();
+  state.mobs = mobs.mobs;
+  renderMobList();
+}
+
+// Open click: try the native picker first. If the platform doesn't
+// support it (501) or the call errors, fall back to the text-paste
+// dialog. User cancellation in the native picker is a no-op.
+async function handleOpenClick() {
+  try {
+    const { path } = await api.pickFile();
+    if (!path) return;  // user cancelled
+    try {
+      await loadAafFile(path);
+    } catch (e) {
+      openDialog();
+      $("#open-path").value = path;
+      const errEl = $("#open-error");
+      errEl.textContent = e.message || String(e);
+      errEl.hidden = false;
+    }
+  } catch (e) {
+    // 501 (no native picker) or any other error → fall back to dialog.
+    openDialog();
+    if (e && e.status !== 501) {
+      const errEl = $("#open-error");
+      errEl.textContent = e.message || String(e);
+      errEl.hidden = false;
+    }
+  }
+}
+
 function wireTopbar() {
-  $("#btn-open").addEventListener("click", openDialog);
+  $("#btn-open").addEventListener("click", handleOpenClick);
   $("#btn-close").addEventListener("click", async () => {
     try {
       await api.close();
@@ -204,21 +263,8 @@ function wireTopbar() {
       return;
     }
     try {
-      const meta = await api.open(path);
-      state.file = meta;
-      state.selected = null;
-      cfbState.tree = null;
-      cfbState.selectedPath = null;
-      cfbState.expanded = new Set();
-      inspectorState.trail = [];
-      inspectorState.current = null;
-      findState.classes = new Set();
-      setFileStatus();
-      renderClassFilterOptions();
+      await loadAafFile(path);
       $("#open-dialog").close();
-      const mobs = await api.mobs();
-      state.mobs = mobs.mobs;
-      renderMobList();
     } catch (e) {
       errEl.textContent = e.message || String(e);
       errEl.hidden = false;

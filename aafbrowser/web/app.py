@@ -15,9 +15,12 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
+import subprocess
+import sys
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from flask import Flask, jsonify, request
 
@@ -92,6 +95,44 @@ def _decorate_cfb_tree(node: dict[str, Any], handle: Any) -> dict[str, Any]:
     return node
 
 
+def _macos_choose_file(prompt: str = "Open AAF file") -> Optional[str]:
+    """
+    Show a native macOS file picker via osascript and return the chosen
+    POSIX path, or None if the user cancelled.
+
+    AppleScript's `choose file` returns a HFS-style alias that we
+    convert to a POSIX path via `POSIX path of`. User cancellation
+    produces exit 1 with `(-128)` in stderr — surface as a clean None
+    so the frontend can distinguish cancel from other failures.
+
+    Raises FileNotFoundError if osascript is not on PATH.
+    Raises RuntimeError on unexpected non-cancel failures.
+    """
+    if shutil.which("osascript") is None:
+        raise FileNotFoundError("osascript not found in PATH")
+
+    script_lines = [
+        f'set theFile to choose file with prompt "{prompt}"',
+        "POSIX path of theFile",
+    ]
+    cmd = ["osascript"]
+    for line in script_lines:
+        cmd.extend(["-e", line])
+
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, encoding="utf-8"
+    )
+    if result.returncode == 0:
+        return result.stdout.strip() or None
+    # User-cancel signature: exit 1 with "(-128)" somewhere in stderr.
+    if "-128" in (result.stderr or ""):
+        return None
+    raise RuntimeError(
+        f"osascript failed: rc={result.returncode} "
+        f"stderr={(result.stderr or '').strip()!r}"
+    )
+
+
 def _format_hex_ascii(data: bytes, width: int = 16) -> tuple[list[str], list[str]]:
     """Two parallel lists: hex rows and ASCII rows. ASCII uses '.' for non-print."""
     hex_rows: list[str] = []
@@ -126,6 +167,29 @@ def _register_routes(app: Flask) -> None:
     @app.get("/api/health")
     def health():
         return jsonify({"ok": True})
+
+    @app.post("/api/pick_file")
+    def api_pick_file():
+        """
+        Open a native macOS file chooser and return the chosen POSIX
+        path. Frontend uses this in place of the paste-a-path dialog
+        when available.
+
+        Returns:
+        - 200 {"path": "<posix>"} on success
+        - 200 {"path": null} on user cancel (so the frontend can
+          distinguish cancel from "platform unsupported")
+        - 501 {"error": "not_implemented"} on non-darwin
+        - 500 on unexpected osascript failure
+        """
+        if sys.platform != "darwin":
+            return _err(501, "not_implemented",
+                        "native picker only available on macOS")
+        try:
+            chosen = _macos_choose_file()
+        except Exception as exc:
+            return _internal(exc)
+        return jsonify({"path": chosen})
 
     @app.get("/")
     def index():

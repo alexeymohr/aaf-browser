@@ -1,9 +1,12 @@
 """Tests for the Flask app — open/close/file (step 2)."""
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from aafbrowser.web import state as state_mod
+from aafbrowser.web import app as app_mod
 from aafbrowser.web.app import create_app
 
 
@@ -22,6 +25,73 @@ def test_health(client):
     r = client.get("/api/health")
     assert r.status_code == 200
     assert r.get_json() == {"ok": True}
+
+
+# --- /api/pick_file ---
+
+
+def test_pick_file_501_on_non_darwin(client, monkeypatch):
+    monkeypatch.setattr(app_mod.sys, "platform", "linux")
+    r = client.post("/api/pick_file")
+    assert r.status_code == 501
+    assert r.get_json()["error"] == "not_implemented"
+
+
+def test_pick_file_returns_chosen_path(client, monkeypatch):
+    monkeypatch.setattr(app_mod.sys, "platform", "darwin")
+    monkeypatch.setattr(app_mod.shutil, "which", lambda _: "/usr/bin/osascript")
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0,
+            stdout="/abs/path/to/My Recording.aaf\n", stderr="",
+        )
+
+    monkeypatch.setattr(app_mod.subprocess, "run", fake_run)
+    r = client.post("/api/pick_file")
+    assert r.status_code == 200
+    assert r.get_json() == {"path": "/abs/path/to/My Recording.aaf"}
+
+
+def test_pick_file_returns_null_on_user_cancel(client, monkeypatch):
+    monkeypatch.setattr(app_mod.sys, "platform", "darwin")
+    monkeypatch.setattr(app_mod.shutil, "which", lambda _: "/usr/bin/osascript")
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=1,
+            stdout="",
+            stderr="0:0: execution error: User canceled. (-128)\n",
+        )
+
+    monkeypatch.setattr(app_mod.subprocess, "run", fake_run)
+    r = client.post("/api/pick_file")
+    assert r.status_code == 200
+    assert r.get_json() == {"path": None}
+
+
+def test_pick_file_500_on_unexpected_failure(client, monkeypatch):
+    monkeypatch.setattr(app_mod.sys, "platform", "darwin")
+    monkeypatch.setattr(app_mod.shutil, "which", lambda _: "/usr/bin/osascript")
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=2,
+            stdout="", stderr="some weird AppleScript error\n",
+        )
+
+    monkeypatch.setattr(app_mod.subprocess, "run", fake_run)
+    r = client.post("/api/pick_file")
+    assert r.status_code == 500
+    assert r.get_json()["error"] == "internal"
+
+
+def test_pick_file_500_when_osascript_missing(client, monkeypatch):
+    monkeypatch.setattr(app_mod.sys, "platform", "darwin")
+    monkeypatch.setattr(app_mod.shutil, "which", lambda _: None)
+    r = client.post("/api/pick_file")
+    assert r.status_code == 500
+    assert "osascript" in (r.get_json().get("detail") or "")
 
 
 def test_open_returns_metadata(client, two_mob_aaf):
