@@ -7,8 +7,9 @@ WeakRefs into the dictionary, etc.) — so a developer can answer questions
 like *"is this metadata actually present in the file or am I being lied to
 by some intermediate tool?"*
 
-See [docs/PROJECT_OVERVIEW.md](docs/PROJECT_OVERVIEW.md) for context and
-[docs/phase1-brief.md](docs/phase1-brief.md) for the build brief.
+See [docs/PROJECT_OVERVIEW.md](docs/PROJECT_OVERVIEW.md) for context, and
+the briefs at [docs/phase1-brief.md](docs/phase1-brief.md) (CLI) and
+[docs/phase2-brief.md](docs/phase2-brief.md) (web GUI).
 
 ## Install
 
@@ -107,6 +108,44 @@ aafbrowser inspect session.aaf --path "Mobs/<mob-id>/Slots/0/Segment"
 aafbrowser inspect session.aaf --mob-id <id> --json
 ```
 
+### `aafbrowser web [<file.aaf>]`
+
+Starts a local browser-based GUI on `127.0.0.1:5173` (override with
+`--host` and `--port`). If a file path is given, the server opens it
+before serving so the page lands on the file already loaded.
+
+```sh
+# Open a file and launch the GUI in the system browser
+aafbrowser web samples/Password_Mix_Audio_Tracks.aaf
+
+# Custom host/port, no auto-open
+aafbrowser web --host 0.0.0.0 --port 8080 --no-browser session.aaf
+```
+
+What the GUI does:
+
+- Two-pane layout. Left pane: AAF Mob list (grouped by class, with name
+  filter) and CFB storage tree. Right pane: type-aware inspector with
+  breadcrumb navigation.
+- Click a MobID badge anywhere in the inspector to jump to that Mob in
+  the list (works across StrongRefVector members and scalar MobID
+  values).
+- Click a WeakRef to expand it in place — dictionary entries aren't
+  surfaced as Mobs, so they show their identifying triple
+  (target_class / target_name / target_auid) without recursing.
+- CFB streams switch the inspector to a hex viewer with offset/length
+  controls. Storage rows show the metadict-decoded class name (e.g.
+  `[MasterMob]`) where pyaaf2 has it registered.
+- Search box at the top of the page runs a regex against names, values,
+  or both, on the AAF graph, the CFB tree, or both. Results render in a
+  collapsible bottom panel; clicking a row navigates to the Mob (AAF
+  layer) or expands the CFB ancestors and selects the entry (CFB
+  layer).
+
+The GUI is a thin frontend over the same `aafbrowser.core` library the
+CLI uses. Read-only invariants are enforced server-side; pyaaf2 access
+is serialized through a single `threading.Lock`.
+
 ### `aafbrowser find <file.aaf> --pattern <regex>`
 
 Regex search across the AAF object graph and/or CFB tree. Each match prints
@@ -168,13 +207,16 @@ and the read-only invariant.
 
 ```
 aafbrowser/
-├── core/           # Pure library — both CLI and (future) web consume this
+├── core/           # Pure library — CLI and web both consume this
 │   ├── cfb.py      # CFB walker (uses pyaaf2's f.cfb, NOT olefile)
 │   ├── aaf.py      # AAF object graph walker with cycle detection
 │   ├── serialize.py # Property values -> JSON-friendly with type tags
 │   └── resolver.py # MobID / path / regex search
-├── cli/            # Click-based CLI (this is what `aafbrowser` invokes)
-└── web/            # Phase 2 — empty stub
+├── cli/            # Click-based CLI (`aafbrowser` console script)
+└── web/            # Phase 2: Flask app + vanilla JS GUI
+    ├── app.py      # Routes under /api
+    ├── state.py    # Process-global open file + threading.Lock
+    └── static/     # index.html, styles.css, app.js
 ```
 
 `aafbrowser.core` is pure: it has no dependency on Click, Flask, or terminal
