@@ -78,6 +78,14 @@ const api = {
     if (!r.ok) throw await apiError(r);
     return r.json();
   },
+  async object({ mob_id, path }) {
+    const qs = mob_id
+      ? "mob_id=" + encodeURIComponent(mob_id)
+      : "path=" + encodeURIComponent(path);
+    const r = await fetch("/api/object?" + qs);
+    if (!r.ok) throw await apiError(r);
+    return r.json();
+  },
 };
 
 async function apiError(r) {
@@ -256,18 +264,297 @@ function renderMobList() {
   }
 }
 
-// Stub — full implementation in step 9
+// ---------- inspector ----------
+
+// Breadcrumb model: an array of {label, fetch} segments. Each fetch is
+// invoked with no args and returns a promise resolving to the same
+// envelope /api/object returns ({sha256, object}). The current head is
+// rendered; clicking an earlier crumb pops back to it.
+const inspectorState = {
+  trail: [], // [{label, fetch}]
+  current: null, // last response (envelope.object)
+};
+
 async function selectMob(mobId) {
   state.selected = mobId;
   $$(".mob-row").forEach((r) =>
     r.classList.toggle("selected", r.dataset.mobId === mobId)
   );
-  // Inspector rendering lands in step 9
-  const inspector = $("#inspector");
-  inspector.replaceChildren(
-    el("p", { class: "muted" },
-      `Selected ${tailMobId(mobId)} — full inspector arrives in step 9.`)
+  const found = state.mobs.find((m) => m.mob_id === mobId);
+  const label = found && found.name
+    ? `${found.class}:${found.name}`
+    : `${(found && found.class) || "Mob"}:${tailMobId(mobId)}`;
+  inspectorState.trail = [{
+    label,
+    fetch: () => api.object({ mob_id: mobId }),
+  }];
+  await renderInspectorAt(0);
+}
+
+async function renderInspectorAt(index) {
+  // Truncate trail to index + render that node.
+  inspectorState.trail = inspectorState.trail.slice(0, index + 1);
+  const seg = inspectorState.trail[index];
+  if (!seg) return;
+  showInspectorLoading(seg.label);
+  let envelope;
+  try {
+    envelope = await seg.fetch();
+  } catch (e) {
+    showInspectorError(e);
+    return;
+  }
+  inspectorState.current = envelope.object;
+  renderBreadcrumb();
+  renderInspectorObject(envelope.object);
+}
+
+function showInspectorLoading(label) {
+  renderBreadcrumb();
+  $("#inspector").replaceChildren(
+    el("p", { class: "muted" }, `Loading ${label}…`)
   );
+}
+
+function showInspectorError(e) {
+  $("#inspector").replaceChildren(
+    el("p", { class: "error" }, `Error: ${e.message || String(e)}`)
+  );
+}
+
+function renderBreadcrumb() {
+  const root = $("#breadcrumb");
+  root.replaceChildren();
+  if (inspectorState.trail.length === 0) {
+    root.appendChild(el("span", { class: "muted" }, "no selection"));
+    return;
+  }
+  inspectorState.trail.forEach((seg, i) => {
+    if (i > 0) root.appendChild(el("span", { class: "sep" }, "/"));
+    const isHead = i === inspectorState.trail.length - 1;
+    const node = el(
+      "span",
+      isHead ? { class: "crumb head" } : {
+        class: "crumb",
+        onclick: () => renderInspectorAt(i),
+      },
+      seg.label
+    );
+    root.appendChild(node);
+  });
+}
+
+function renderInspectorObject(obj) {
+  const inspector = $("#inspector");
+  inspector.replaceChildren();
+  if (!obj) {
+    inspector.appendChild(el("p", { class: "muted" }, "<null>"));
+    return;
+  }
+  if (obj._type === "scalar_leaf") {
+    inspector.appendChild(el("h3", {}, "scalar leaf"));
+    inspector.appendChild(renderValueCell(obj.value));
+    return;
+  }
+  if (obj._type === "aaf_object_cycle") {
+    inspector.appendChild(el("p", { class: "error" },
+      `cycle: ${obj.class} ${obj.mob_id || ""}`));
+    return;
+  }
+
+  // Header
+  const header = el("div", { class: "obj-header" }, [
+    el("span", { class: "class-tag" }, obj.class || "?"),
+    obj.name
+      ? el("span", { class: "obj-name" }, obj.name)
+      : null,
+    obj.mob_id
+      ? el("span", { class: "obj-mob-id", title: obj.mob_id }, obj.mob_id)
+      : null,
+  ].filter(Boolean));
+  inspector.appendChild(header);
+
+  // Properties
+  const table = el("div", { class: "props-table" });
+  const props = obj.properties || {};
+  const propNames = Object.keys(props);
+  if (propNames.length === 0) {
+    inspector.appendChild(el("p", { class: "muted" }, "no properties"));
+    return;
+  }
+  for (const pname of propNames) {
+    const value = props[pname];
+    const { typeBadge, valueCell } = renderProperty(pname, value);
+    table.appendChild(el("div", { class: "prop-name" }, pname));
+    table.appendChild(typeBadge);
+    table.appendChild(valueCell);
+  }
+  inspector.appendChild(table);
+}
+
+function renderProperty(pname, value) {
+  // value is whatever core.serialize_property emitted: a primitive, a
+  // typed envelope ({_type: rational | datetime | auid | mobid | bytes |
+  // weakref | aaf_object | aaf_object_cycle}), an array (vector/set), or
+  // null.
+  let typeName = describeType(value);
+  const typeBadge = el("span", { class: "prop-type" }, typeName);
+  const valueCell = el("div", { class: "prop-value" });
+  populateValue(valueCell, value, pname);
+  return { typeBadge, valueCell };
+}
+
+function describeType(v) {
+  if (v === null) return "null";
+  if (Array.isArray(v)) return `vector[${v.length}]`;
+  if (typeof v === "string") return "str";
+  if (typeof v === "boolean") return "bool";
+  if (typeof v === "number") return Number.isInteger(v) ? "int" : "float";
+  if (typeof v === "object") {
+    if (v._type) return v._type;
+    return "object";
+  }
+  return typeof v;
+}
+
+function populateValue(cell, value, pname) {
+  if (value === null) {
+    cell.appendChild(el("span", { class: "muted" }, "null"));
+    return;
+  }
+  if (Array.isArray(value)) {
+    populateVector(cell, value, pname);
+    return;
+  }
+  if (typeof value === "object") {
+    populateTypedEnvelope(cell, value, pname);
+    return;
+  }
+  cell.classList.add("scalar");
+  cell.appendChild(document.createTextNode(String(value)));
+}
+
+function populateVector(cell, items, pname) {
+  if (items.length === 0) {
+    cell.appendChild(el("span", { class: "muted" }, "[empty]"));
+    return;
+  }
+  const summary = el("span", { class: "expandable" },
+    `[${items.length} items] ▶`);
+  cell.appendChild(summary);
+  let expanded = false;
+  const host = el("div", { class: "nested-obj", hidden: true });
+  cell.appendChild(host);
+  summary.addEventListener("click", () => {
+    expanded = !expanded;
+    host.hidden = !expanded;
+    summary.textContent = expanded
+      ? `[${items.length} items] ▼`
+      : `[${items.length} items] ▶`;
+    if (expanded && host.childElementCount === 0) {
+      items.forEach((item, i) => {
+        const row = el("div", { class: "vec-item" }, [
+          el("span", { class: "muted" }, `[${i}] `),
+        ]);
+        const inner = el("div", { class: "prop-value" });
+        populateValue(inner, item, `${pname}/${i}`);
+        row.appendChild(inner);
+        host.appendChild(row);
+      });
+    }
+  });
+}
+
+function populateTypedEnvelope(cell, v, pname) {
+  switch (v._type) {
+    case "rational":
+      cell.appendChild(document.createTextNode(
+        `${v.num}/${v.den}` + (v.value != null ? `  (${v.value})` : "")));
+      return;
+    case "datetime":
+      cell.appendChild(document.createTextNode(v.value));
+      return;
+    case "auid":
+      cell.appendChild(el("span", { class: "badge" }, v.value));
+      return;
+    case "mobid":
+      // Step 10 wires this to navigate; for now show as a tail-8 badge.
+      cell.appendChild(renderMobIdBadge(v.value));
+      return;
+    case "umid":
+      cell.appendChild(el("span", { class: "badge" }, v.value));
+      return;
+    case "bytes":
+      cell.appendChild(document.createTextNode(
+        `<${v.length} bytes${v.truncated ? ", truncated" : ""}>`));
+      return;
+    case "weakref":
+      cell.classList.add("weakref");
+      cell.appendChild(document.createTextNode(
+        `→ ${v.target_class}` +
+        (v.target_name ? ` "${v.target_name}"` : "")));
+      return;
+    case "aaf_object":
+      // StrongRef nested object: inline expand.
+      populateNestedObject(cell, v, pname);
+      return;
+    case "aaf_object_cycle":
+      cell.appendChild(el("span", { class: "error" },
+        `<cycle: ${v.class} ${v.mob_id || ""}>`));
+      return;
+    case "unknown":
+      cell.appendChild(document.createTextNode(
+        `<unknown ${v.python_type}: ${v.repr}>`));
+      return;
+    default:
+      cell.appendChild(document.createTextNode(JSON.stringify(v)));
+  }
+}
+
+function populateNestedObject(cell, obj, pname) {
+  const summary = el("span", { class: "expandable" },
+    summarizeNested(obj) + " ▶");
+  cell.appendChild(summary);
+  const host = el("div", { class: "nested-obj", hidden: true });
+  cell.appendChild(host);
+  let expanded = false;
+  summary.addEventListener("click", () => {
+    expanded = !expanded;
+    host.hidden = !expanded;
+    summary.textContent = summarizeNested(obj) + (expanded ? " ▼" : " ▶");
+    if (expanded && host.childElementCount === 0) {
+      // Render the nested object's properties inline as a fresh table
+      const tbl = el("div", { class: "props-table" });
+      const props = obj.properties || {};
+      for (const pname2 of Object.keys(props)) {
+        const { typeBadge, valueCell } =
+          renderProperty(pname2, props[pname2]);
+        tbl.appendChild(el("div", { class: "prop-name" }, pname2));
+        tbl.appendChild(typeBadge);
+        tbl.appendChild(valueCell);
+      }
+      host.appendChild(tbl);
+    }
+  });
+}
+
+function summarizeNested(obj) {
+  const cls = obj.class || "?";
+  if (obj.name) return `${cls} "${obj.name}"`;
+  if (obj.mob_id) return `${cls} ${tailMobId(obj.mob_id)}`;
+  return cls;
+}
+
+// Step 10 makes this clickable; for now it's just visual.
+function renderMobIdBadge(urn) {
+  return el("span", { class: "badge mob-id", title: urn },
+    `${tailMobId(urn)}`);
+}
+
+function renderValueCell(v) {
+  const c = el("div", { class: "prop-value" });
+  populateValue(c, v, "");
+  return c;
 }
 
 // ---------- bootstrap ----------
