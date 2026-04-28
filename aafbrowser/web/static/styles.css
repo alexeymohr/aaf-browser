@@ -27,7 +27,7 @@
      defaults favor the left + center panes (track list, clip tree)
      so operator-meaningful info is visible without resizing; the
      inspector takes whatever remains (1fr). */
-  --col-tracks: 280px;
+  --col-tracks: 400px;
   --col-clips: 560px;
   --col-mobs: 380px;
   --col-cfb: 380px;
