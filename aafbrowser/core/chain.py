@@ -55,6 +55,26 @@ def _format_rational(r: Any) -> Optional[str]:
     return f"{int(num)}/{int(den)}"
 
 
+def _slot_property(slot: Any, name: str) -> Any:
+    """
+    Look up a slot property by name via the properties() iterator.
+
+    pyaaf2 doesn't auto-expose every AAF property as a Python attribute —
+    PhysicalTrackNumber is one of those. `getattr(slot, "PhysicalTrackNumber")`
+    silently returns None even when the property exists with a value;
+    we have to iterate slot.properties() to get the real value.
+    """
+    if slot is None:
+        return None
+    prop_iter = getattr(slot, "properties", None)
+    if not callable(prop_iter):
+        return None
+    for p in prop_iter():
+        if p.name == name:
+            return p.value
+    return None
+
+
 def _slot_at(mob: Any, slot_id: int) -> Optional[Any]:
     """mob.slot_at returns the slot with that slot_id or None."""
     fn = getattr(mob, "slot_at", None)
@@ -174,7 +194,7 @@ def _make_hop(
             else None
         ),
         segment_class=type(segment).__name__ if segment is not None else "<no-segment>",
-        physical_track_number=getattr(slot, "PhysicalTrackNumber", None) if slot is not None else None,
+        physical_track_number=_slot_property(slot, "PhysicalTrackNumber"),
         edit_rate=_format_rational(getattr(slot, "edit_rate", None)) if slot is not None else None,
         start_time=getattr(segment, "start", None) if segment is not None else None,
         length=getattr(segment, "length", None) if segment is not None else None,

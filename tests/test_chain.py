@@ -50,6 +50,18 @@ def test_hop_carries_edit_rate_and_slot_metadata(chain_aaf):
     assert hops[2].segment_class == "Sequence"
 
 
+def test_hop_captures_physical_track_number(chain_aaf):
+    """
+    Regression guard: PhysicalTrackNumber is a slot Property, not a
+    Python attribute. Earlier chain-walk used getattr(slot, "PhysicalTrackNumber")
+    which silently returned None on every real session AAF. Every hop in
+    the chain fixture has PTN=7; this test must see them all.
+    """
+    with aaf2.open(str(chain_aaf), "r") as f:
+        hops = walk_chain(f, _comp_mob(f))
+    assert [h.physical_track_number for h in hops] == [7, 7, 7]
+
+
 def test_walk_chain_accepts_mob_id_string(chain_aaf):
     with aaf2.open(str(chain_aaf), "r") as f:
         urn = str(_comp_mob(f).mob_id)

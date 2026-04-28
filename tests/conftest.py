@@ -40,16 +40,22 @@ def _write_chain_aaf(path: Path) -> None:
     Three-hop CompositionMob -> MasterMob -> SourceMob chain so chain-walk
     tests have a known shape to bite on. The SourceMob's slot is the
     natural essence terminal (Sequence with no SourceClip).
+
+    Each slot carries an explicit PhysicalTrackNumber=7 so chain-walk
+    can be asserted to surface it (it's a slot Property accessed via
+    properties() iteration, not a Python attribute).
     """
     with aaf2.open(str(path), "w") as f:
         src_mob = f.create.SourceMob("SrcEPWD0209_HOSTA")
         f.content.mobs.append(src_mob)
         src_mob.descriptor = f.create.ImportDescriptor()
         src_slot = src_mob.create_sound_slot(edit_rate=48000)
+        src_slot["PhysicalTrackNumber"].value = 7
 
         master_mob = f.create.MasterMob("MstHostA")
         f.content.mobs.append(master_mob)
         m_slot = master_mob.create_sound_slot(edit_rate=48000)
+        m_slot["PhysicalTrackNumber"].value = 7
         m_clip = f.create.SourceClip(
             start=0, length=48000,
             mob_id=src_mob.mob_id, slot_id=src_slot.slot_id,
@@ -59,6 +65,7 @@ def _write_chain_aaf(path: Path) -> None:
         comp_mob = f.create.CompositionMob("PW_213_HOSTA ISO")
         f.content.mobs.append(comp_mob)
         c_slot = comp_mob.create_sound_slot(edit_rate=48000)
+        c_slot["PhysicalTrackNumber"].value = 7
         c_clip = f.create.SourceClip(
             start=0, length=48000,
             mob_id=master_mob.mob_id, slot_id=m_slot.slot_id,
