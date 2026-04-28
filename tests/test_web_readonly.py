@@ -91,11 +91,19 @@ def test_every_endpoint_leaves_input_byte_identical(client, minimal_aaf_copy):
     client.get(f"/api/cfb/stream?path={sp}&offset=0&length=8")
     check("cfb-stream")
 
-    # Find — both layers, both scopes
+    # Find — both layers, both scopes, plus class filter (Phase 3)
     client.get("/api/find?pattern=(?i)mob")
     client.get("/api/find?pattern=(?i)mob&layer=aaf&in=names")
     client.get("/api/find?pattern=(?i)mob&layer=cfb")
+    client.get("/api/find?pattern=(?i)mob&class=MasterMob")
+    client.get("/api/find?pattern=(?i)mob&class=CompositionMob&class=MasterMob")
     check("find")
+
+    # Walk (Phase 3) — both mob_id and path entry forms
+    client.get(f"/api/walk?mob_id={urn}")
+    client.get(f"/api/walk?path=Mobs/{urn}/Slots/0/Segment")
+    client.get(f"/api/walk?mob_id={urn}&max_hops=1")
+    check("walk")
 
     # Resolve by mob-id and by path
     client.get(f"/api/resolve?ref={urn}")
