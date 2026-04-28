@@ -10,19 +10,24 @@ by some intermediate tool?"*
 See [docs/PROJECT_OVERVIEW.md](docs/PROJECT_OVERVIEW.md) for context, and
 the briefs at [docs/phase1-brief.md](docs/phase1-brief.md) (CLI),
 [docs/phase2-brief.md](docs/phase2-brief.md) (web GUI),
-[docs/phase3-brief.md](docs/phase3-brief.md) (chain-walk + class-filtered find), and
-[docs/phase4-brief.md](docs/phase4-brief.md) (macOS app + native file picker).
+[docs/phase3-brief.md](docs/phase3-brief.md) (chain-walk + class-filtered find),
+[docs/phase4-brief.md](docs/phase4-brief.md) (macOS app + native file picker),
+and [docs/phase5-brief.md](docs/phase5-brief.md) (embedded WKWebView).
 
 ## Install — macOS app (recommended)
 
 Download the latest `AAF-Browser-vX.Y.Z-arm64.dmg` from the
 [GitHub Releases](https://github.com/alexeymohr/AAF_Browser/releases)
 page, mount it, and drag **AAF Browser** to `/Applications`. Launch
-from Spotlight or the Applications folder. The app starts a local
-server and opens the GUI in your default browser.
+from Spotlight or the Applications folder. The app opens in a real
+macOS window — title bar, dock icon, native menu bar with Cmd-Q to
+quit. No browser tab.
 
 Apple Silicon (M1+) only. Files are never modified — the app uses
-the same read-only pyaaf2 path as the CLI.
+the same read-only pyaaf2 path as the CLI. The window's content is
+the same web GUI that pip-installed users see; the difference is
+that it renders inside an embedded WKWebView instead of in
+Safari/Chrome.
 
 If macOS shows a Gatekeeper warning on first launch, the .dmg was
 ad-hoc signed (signing secrets weren't configured in the build):
@@ -166,15 +171,22 @@ What the GUI does:
   collapsible bottom panel; clicking a row navigates to the Mob (AAF
   layer) or expands the CFB ancestors and selects the entry (CFB
   layer).
-- **Open** uses a native macOS file picker (via `osascript`); on other
-  platforms it falls back to a paste-the-path text dialog.
-- **Quit** link in the topbar stops the local server cleanly. Closing
-  the browser tab also stops it (via `navigator.sendBeacon`), so the
-  app doesn't leak server processes.
+- **Open** uses a native file picker. In the bundled .app it's a real
+  `NSOpenPanel` via pywebview's JS bridge (with `.aaf` filtering); in
+  `aafbrowser web` from a pip install it's an `osascript`-driven
+  picker. Non-macOS platforms fall back to a paste-the-path dialog.
+- **Quit** link in the topbar stops the local server cleanly. In a
+  browser tab, closing the tab also stops it (via
+  `navigator.sendBeacon`). In the bundled .app, closing the window
+  or Cmd-Q from the menu bar shuts everything down.
+- The window/tab title shows the open file's basename
+  (`AAF Browser — PWD_310_LC_10-07-2025.aaf`).
 
 The GUI is a thin frontend over the same `aafbrowser.core` library the
 CLI uses. Read-only invariants are enforced server-side; pyaaf2 access
-is serialized through a single `threading.Lock`.
+is serialized through a single `threading.Lock`. The bundled .app
+ships an embedded WKWebView via pywebview, so the window is native
+even though the content is the same Flask + JS frontend.
 
 ### `.aaf` file association (macOS app only)
 

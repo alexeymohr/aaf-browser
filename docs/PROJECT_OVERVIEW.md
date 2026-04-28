@@ -122,6 +122,7 @@ parser is unnecessary and would complicate the read-only guarantee.
 | 2 | Web GUI on top of the same core | Shipped — `docs/phase2-brief.md`, `docs/completion_reports/phase2-completion-report.md` |
 | 3 | Chain-walk + class-filtered find | Shipped — `docs/phase3-brief.md`, `docs/completion_reports/phase3-completion-report.md` |
 | 4 | macOS app distribution + native file picker | Shipped — `docs/phase4-brief.md`, `docs/completion_reports/phase4-completion-report.md` |
+| 5 | Embedded WKWebView (real Mac app) | Shipped — `docs/phase5-brief.md`, `docs/completion_reports/phase5-completion-report.md` |
 
 Each phase brief was drafted only after the previous phase had been used in
 anger against at least one real AAF (the Password show is the recurring test
