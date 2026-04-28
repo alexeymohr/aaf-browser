@@ -94,6 +94,69 @@ def _write_cycle_aaf(path: Path) -> None:
         )
 
 
+def _write_multi_track_aaf(path: Path) -> None:
+    """
+    A CompositionMob with two audio tracks (different PhysicalTrackNumbers)
+    and one video track. The first audio track has two SourceClip
+    components on its Sequence so list_clips has a real cursor to advance.
+    Each audio chain ends at a SourceMob with a distinct PTN so the
+    operator-layer mic-identity recovery can be asserted per clip.
+    """
+    with aaf2.open(str(path), "w") as f:
+        # Three SourceMobs (recorder identities) with distinct PTNs.
+        sources = []
+        for i, name in enumerate(("SrcA", "SrcB", "SrcC"), start=1):
+            sm = f.create.SourceMob(name)
+            f.content.mobs.append(sm)
+            sm.descriptor = f.create.ImportDescriptor()
+            s = sm.create_sound_slot(edit_rate=48000)
+            s["PhysicalTrackNumber"].value = i
+            sources.append((sm, s))
+
+        # One MasterMob per source, one slot each pointing at the SourceMob.
+        masters = []
+        for (sm, s_slot), name in zip(sources, ("MstA", "MstB", "MstC")):
+            mm = f.create.MasterMob(name)
+            f.content.mobs.append(mm)
+            mslot = mm.create_sound_slot(edit_rate=48000)
+            mslot["PhysicalTrackNumber"].value = s_slot["PhysicalTrackNumber"].value
+            mslot.segment = f.create.SourceClip(
+                start=0, length=24000,
+                mob_id=sm.mob_id, slot_id=s_slot.slot_id,
+            )
+            masters.append((mm, mslot))
+
+        # CompositionMob: two audio slots (PTN 1 and 2) and one video slot.
+        comp = f.create.CompositionMob("MultiTrackComp")
+        f.content.mobs.append(comp)
+
+        # Audio slot 1 (PTN=1) with two clips on its Sequence.
+        a1 = comp.create_sound_slot(edit_rate=48000)
+        a1["PhysicalTrackNumber"].value = 1
+        for mm, mslot in (masters[0], masters[1]):
+            a1.segment.components.append(
+                f.create.SourceClip(
+                    start=0, length=24000,
+                    mob_id=mm.mob_id, slot_id=mslot.slot_id,
+                )
+            )
+
+        # Audio slot 2 (PTN=2) with one clip.
+        a2 = comp.create_sound_slot(edit_rate=48000)
+        a2["PhysicalTrackNumber"].value = 2
+        a2.segment.components.append(
+            f.create.SourceClip(
+                start=0, length=48000,
+                mob_id=masters[2][0].mob_id, slot_id=masters[2][1].slot_id,
+            )
+        )
+
+        # Video slot — no PTN set, no clips. Operator ordinal falls back
+        # to slot_id.
+        v = comp.create_picture_slot(edit_rate=25)
+        v.segment.length = 100
+
+
 def _write_broken_ref_aaf(path: Path) -> None:
     """A MasterMob whose SourceClip references a MobID that's not in the file."""
     from aaf2.mobid import MobID
@@ -131,6 +194,13 @@ def two_mob_aaf(fixture_dir: Path) -> Path:
 def chain_aaf(fixture_dir: Path) -> Path:
     p = fixture_dir / "chain.aaf"
     _write_chain_aaf(p)
+    return p
+
+
+@pytest.fixture(scope="session")
+def multi_track_aaf(fixture_dir: Path) -> Path:
+    p = fixture_dir / "multi_track.aaf"
+    _write_multi_track_aaf(p)
     return p
 
 

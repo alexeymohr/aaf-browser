@@ -571,3 +571,121 @@ def test_find_class_filter_repeated(client, chain_aaf):
     assert r.status_code == 200
     classnames = {m["classname"] for m in r.get_json()["matches"]}
     assert "SourceMob" not in classnames
+
+
+# --- /api/tracks (operator layer) ---
+
+
+def test_tracks_no_file_open(client):
+    r = client.get("/api/tracks")
+    assert r.status_code == 409
+
+
+def test_tracks_essence_only_returns_empty_list(client, broken_ref_aaf):
+    """A file with no CompositionMob still returns 200 with tracks=[].
+    The empty state is rendered by the frontend, not surfaced as an error."""
+    client.post("/api/open", json={"path": str(broken_ref_aaf)})
+    r = client.get("/api/tracks")
+    assert r.status_code == 200
+    j = r.get_json()
+    assert j["tracks"] == []
+    assert j["topmost_composition"] is None
+    assert "sha256" in j
+
+
+def test_tracks_multi_track(client, multi_track_aaf):
+    client.post("/api/open", json={"path": str(multi_track_aaf)})
+    r = client.get("/api/tracks")
+    assert r.status_code == 200
+    j = r.get_json()
+    assert j["topmost_composition"]["name"] == "MultiTrackComp"
+    assert [t["kind"] for t in j["tracks"]] == ["audio", "audio", "video"]
+    assert [t["slot_id"] for t in j["tracks"]] == [1, 2, 3]
+    assert all(t["_type"] == "operator_track" for t in j["tracks"])
+
+
+# --- /api/track/clips ---
+
+
+def test_track_clips_no_file_open(client):
+    r = client.get("/api/track/clips?slot=1")
+    assert r.status_code == 409
+
+
+def test_track_clips_missing_slot_400(client, multi_track_aaf):
+    client.post("/api/open", json={"path": str(multi_track_aaf)})
+    r = client.get("/api/track/clips")
+    assert r.status_code == 400
+
+
+def test_track_clips_non_integer_slot_400(client, multi_track_aaf):
+    client.post("/api/open", json={"path": str(multi_track_aaf)})
+    r = client.get("/api/track/clips?slot=not-a-number")
+    assert r.status_code == 400
+
+
+def test_track_clips_unknown_slot_404(client, multi_track_aaf):
+    client.post("/api/open", json={"path": str(multi_track_aaf)})
+    r = client.get("/api/track/clips?slot=99")
+    assert r.status_code == 404
+
+
+def test_track_clips_missing_composition_404(client, broken_ref_aaf):
+    client.post("/api/open", json={"path": str(broken_ref_aaf)})
+    r = client.get("/api/track/clips?slot=1")
+    assert r.status_code == 404
+
+
+def test_tracks_response_carries_timecode_block(client, multi_track_aaf):
+    """The /api/tracks response must include a 'timecode' field — null
+    when no Timecode slot exists, populated otherwise. The frontend
+    needs this for per-clip TC math."""
+    client.post("/api/open", json={"path": str(multi_track_aaf)})
+    j = client.get("/api/tracks").get_json()
+    assert "timecode" in j
+    # multi_track_aaf has no Timecode slot
+    assert j["timecode"] is None
+
+
+# --- /api/session (Phase 6.x headline summary) ---
+
+
+def test_session_no_file_open(client):
+    r = client.get("/api/session")
+    assert r.status_code == 409
+
+
+def test_session_summary_basic(client, multi_track_aaf):
+    client.post("/api/open", json={"path": str(multi_track_aaf)})
+    r = client.get("/api/session")
+    assert r.status_code == 200
+    j = r.get_json()
+    assert j["session"]["_type"] == "operator_session_summary"
+    s = j["session"]
+    assert s["audio_track_count"] == 2
+    assert s["video_track_count"] == 1
+    assert s["total_clip_count"] == 3
+    assert s["master_mob_count"] == 3
+    assert s["source_mob_count"] == 3
+    assert s["timecode"] is None
+    # File size is computed from the on-disk file
+    assert s["file_size_bytes"] is not None and s["file_size_bytes"] > 0
+
+
+def test_track_clips_recovers_mic_identity(client, multi_track_aaf):
+    """End-to-end: open the file, hit /api/track/clips, see chain-walk-
+    derived mic identity baked into each clip row."""
+    client.post("/api/open", json={"path": str(multi_track_aaf)})
+    r = client.get("/api/track/clips?slot=1")
+    assert r.status_code == 200
+    j = r.get_json()
+    assert j["slot_id"] == 1
+    assert len(j["clips"]) == 2
+    c0, c1 = j["clips"]
+    assert c0["_type"] == "operator_clip"
+    assert c0["mic_identity"] == "SrcA"
+    assert c0["physical_track_number"] == 1
+    assert c0["is_recorder_source"] is True
+    assert c0["timeline_start"] == 0
+    assert c1["mic_identity"] == "SrcB"
+    assert c1["timeline_start"] == 24000

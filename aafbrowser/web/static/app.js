@@ -48,6 +48,37 @@ const state = {
   mobs: [],          // [{mob_id, class, name, slot_count}, ...]
   filter: "",        // case-insensitive substring on name
   selected: null,    // mob_id of currently selected row
+  view: "tracks",    // "tracks" | "mobs" | "cfb" — top-level view tab
+};
+
+// Session-summary state (Phase 6.x): drives the top headline bar and
+// is the source of truth for per-clip timecode math.
+const sessionState = {
+  summary: null,    // SessionSummary dict from /api/session
+  timecode: null,   // {edit_rate, edit_rate_value, fps_nominal, drop, start_frames, ...}
+};
+
+// Tracks-view (Phase 6) state. Independent of the geek-view state above.
+//
+// The center pane is a recursive tree of nodes. Each node has:
+//   id        — stable unique key, used for expansion + selection state
+//   kind      — "clip" (top-level, from /api/track/clips) or "object"
+//               (an aaf_object dict from /api/object)
+//   data      — the underlying clip dict or aaf_object dict
+//   getRow    — () => DOM (the row content for that node)
+//   getKids   — async () => Node[]   (children in the tree)
+//
+// Selection and expansion are independent: caret toggles expansion;
+// label click selects + populates the inspector with that node's info.
+const tracksState = {
+  tracks: [],                 // Track[] from /api/tracks
+  topmost: null,              // {mob_id, name} or null
+  selectedSlotId: null,       // currently selected track's slot_id
+  clips: [],                  // Clip[] from /api/track/clips
+  expanded: new Set(),        // node.id for every expanded node
+  childrenCache: new Map(),   // node.id -> Node[] | "loading" | {error}
+  selectedNodeId: null,       // highlight + inspector source-of-truth
+  selectedNode: null,         // the actual node (for inspector render)
 };
 
 // ---------- API wrappers ----------
@@ -145,6 +176,21 @@ const api = {
     if (!r.ok) throw await apiError(r);
     return r.json();
   },
+  async tracks() {
+    const r = await fetch("/api/tracks");
+    if (!r.ok) throw await apiError(r);
+    return r.json();
+  },
+  async trackClips(slotId) {
+    const r = await fetch("/api/track/clips?slot=" + encodeURIComponent(slotId));
+    if (!r.ok) throw await apiError(r);
+    return r.json();
+  },
+  async session() {
+    const r = await fetch("/api/session");
+    if (!r.ok) throw await apiError(r);
+    return r.json();
+  },
 };
 
 async function apiError(r) {
@@ -188,22 +234,109 @@ function openDialog() {
 // Load an AAF by path: hit /api/open, reset all per-file UI state,
 // fetch the Mob index. Used by both the native picker and the
 // text-paste fallback dialog.
+//
+// /api/open is the slow step on large sessions (server iterates all
+// mobs to build the eager index). beginAafLoading/endAafLoading
+// surface a spinner across the topbar + every visible pane so the
+// user knows the app isn't frozen during the wait.
 async function loadAafFile(path) {
-  const meta = await api.open(path);
-  state.file = meta;
-  state.selected = null;
-  cfbState.tree = null;
-  cfbState.selectedPath = null;
-  cfbState.expanded = new Set();
-  inspectorState.trail = [];
-  inspectorState.current = null;
-  findState.classes = new Set();
+  const basename = path.split("/").pop();
+  beginAafLoading(basename);
+  try {
+    const meta = await api.open(path);
+    state.file = meta;
+    state.selected = null;
+    cfbState.tree = null;
+    cfbState.selectedPath = null;
+    cfbState.expanded = new Set();
+    inspectorState.trail = [];
+    inspectorState.current = null;
+    findState.classes = new Set();
+    resetTracksState();
+    renderClassFilterOptions();
+    const mobs = await api.mobs();
+    state.mobs = mobs.mobs;
+    renderMobList();
+    // Always fetch session summary + tracks — Tracks is the default
+    // landing and the session bar lives above all views.
+    await Promise.all([loadSession(), loadTracks()]);
+  } finally {
+    endAafLoading();
+  }
+}
+
+// Show the file-load spinner across the topbar and each pane that
+// would otherwise display a stale or "no file open" message during
+// the load. setFileStatus / renderTrackList / renderMobList /
+// loadCfbTreeIfNeeded restore real content after endAafLoading runs.
+function beginAafLoading(basename) {
+  document.title = `AAF Browser — Loading ${basename}…`;
+  // Hide the previous file's headline bar so the user doesn't see
+  // stale info during the swap.
+  $("#session-bar").hidden = true;
+  const status = $("#file-status");
+  status.classList.remove("muted");
+  status.replaceChildren(
+    el("span", { class: "spinner" }),
+    document.createTextNode(` Loading ${basename}…`),
+  );
+  const openBtn = $("#btn-open");
+  openBtn.disabled = true;
+  openBtn.classList.add("loading");
+  // Per-pane hints
+  $("#tracks-summary").replaceChildren(
+    el("span", { class: "spinner" }),
+    document.createTextNode(` Loading ${basename}…`),
+  );
+  $("#track-list").replaceChildren();
+  $("#clips-summary").textContent = "";
+  $("#clips-tree").replaceChildren();
+  const loadingRow = (label) =>
+    el("div", { class: "loading-row" }, [
+      el("span", { class: "spinner" }),
+      document.createTextNode(label),
+    ]);
+  $("#mob-list").replaceChildren(loadingRow(`Loading ${basename}…`));
+  $("#cfb-tree").replaceChildren(loadingRow(`Loading ${basename}…`));
+  $("#inspector").replaceChildren(
+    el("p", { class: "loading-row" }, [
+      el("span", { class: "spinner large" }),
+      document.createTextNode(` Loading ${basename}…`),
+    ])
+  );
+  $("#breadcrumb").replaceChildren();
+}
+
+function endAafLoading() {
+  $("#btn-open").disabled = false;
+  $("#btn-open").classList.remove("loading");
   setFileStatus();
-  renderClassFilterOptions();
   syncWindowTitle();
-  const mobs = await api.mobs();
-  state.mobs = mobs.mobs;
-  renderMobList();
+  // beginAafLoading replaced #inspector with a spinner. After the load
+  // there's no selection yet, so clear the spinner and show a neutral
+  // hint. If a selection happens later, renderTracksInspector /
+  // selectMob etc. overwrite this.
+  if (tracksState.selectedNode == null && state.selected == null) {
+    $("#inspector").replaceChildren(
+      el("p", { class: "muted" },
+        "Select a track and a clip to inspect it.")
+    );
+    $("#breadcrumb").replaceChildren();
+  }
+}
+
+function resetTracksState() {
+  tracksState.tracks = [];
+  tracksState.topmost = null;
+  tracksState.selectedSlotId = null;
+  tracksState.clips = [];
+  tracksState.expanded = new Set();
+  tracksState.childrenCache = new Map();
+  tracksState.selectedNodeId = null;
+  tracksState.selectedNode = null;
+  tracksState.editRateValue = null;
+  sessionState.summary = null;
+  sessionState.timecode = null;
 }
 
 // Mirror the open file's basename into document.title. pywebview's
@@ -281,13 +414,17 @@ function wireTopbar() {
     inspectorState.trail = [];
     inspectorState.current = null;
     findState.classes = new Set();
+    resetTracksState();
     setFileStatus();
     syncWindowTitle();
     renderMobList();
+    renderTrackList();
+    renderClipsPane();
+    renderSessionBar();
     renderClassFilterOptions();
     $("#cfb-tree").replaceChildren();
     $("#inspector").replaceChildren(
-      el("p", { class: "muted" }, "Open a file, then select a Mob to inspect it.")
+      el("p", { class: "muted" }, "Open a file, then select something to inspect it.")
     );
     $("#breadcrumb").replaceChildren();
   });
@@ -317,19 +454,25 @@ function wireTopbar() {
   });
 }
 
-// ---------- left pane: tabs + filter + Mob list ----------
+// ---------- top-level view tabs (Tracks / All Mobs / CFB) ----------
 
-function wireTabs() {
-  $$(".tabs .tab").forEach((tab) => {
-    tab.addEventListener("click", () => {
-      $$(".tabs .tab").forEach((t) => t.classList.toggle("active", t === tab));
-      const which = tab.dataset.tab;
-      $$(".tab-pane").forEach((p) =>
-        p.classList.toggle("active", p.dataset.pane === which)
-      );
-      if (which === "cfb") loadCfbTreeIfNeeded();
-    });
+function wireViewTabs() {
+  $$("#view-tabs .view-tab").forEach((tab) => {
+    tab.addEventListener("click", () => activateView(tab.dataset.view));
   });
+}
+
+function activateView(view) {
+  state.view = view;
+  document.body.classList.remove("view-tracks", "view-mobs", "view-cfb");
+  document.body.classList.add("view-" + view);
+  $$("#view-tabs .view-tab").forEach((t) => {
+    const active = t.dataset.view === view;
+    t.classList.toggle("active", active);
+    t.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  // Lazy initialization per view
+  if (view === "cfb") loadCfbTreeIfNeeded();
 }
 
 function wireCfbControls() {
@@ -1379,38 +1522,820 @@ function findCfbEntry(node, path) {
 }
 
 function activateTab(which) {
-  $$(".tabs .tab").forEach((t) =>
-    t.classList.toggle("active", t.dataset.tab === which)
+  // Translate the legacy AAF/CFB tab names used by jumpToMatch into the
+  // new top-level view names (Phase 6).
+  const view = which === "aaf" ? "mobs" : which === "cfb" ? "cfb" : which;
+  activateView(view);
+}
+
+// ---------- Tracks view (Phase 6 operator-first surface) ----------
+
+async function loadTracks() {
+  if (!state.file) {
+    renderTrackList();
+    renderClipsPane();
+    return;
+  }
+  try {
+    const env = await api.tracks();
+    tracksState.tracks = env.tracks || [];
+    tracksState.topmost = env.topmost_composition || null;
+    sessionState.timecode = env.timecode || null;
+    // Audio + video tracks share an edit_rate in well-formed Avid AAFs;
+    // grab the first one for the per-clip seconds math. Fall back to
+    // the timecode rate if no tracks are present.
+    tracksState.editRateValue =
+      (tracksState.tracks[0] && parseRational(tracksState.tracks[0].edit_rate))
+      || (sessionState.timecode && sessionState.timecode.edit_rate_value)
+      || null;
+    renderTrackList();
+    renderClipsPane();
+  } catch (e) {
+    const summary = $("#tracks-summary");
+    if (summary) summary.textContent = "Error: " + (e.message || String(e));
+    $("#track-list").replaceChildren();
+  }
+}
+
+async function loadSession() {
+  if (!state.file) {
+    renderSessionBar();
+    return;
+  }
+  try {
+    const env = await api.session();
+    sessionState.summary = env.session;
+    renderSessionBar();
+  } catch (e) {
+    sessionState.summary = null;
+    renderSessionBar();
+  }
+}
+
+function renderSessionBar() {
+  const bar = $("#session-bar");
+  bar.replaceChildren();
+  const s = sessionState.summary;
+  if (!state.file || !s) {
+    bar.hidden = true;
+    return;
+  }
+  bar.hidden = false;
+
+  const cell = (label, valueNodes, sub) => {
+    const valueRow = el("span", { class: "value" }, valueNodes);
+    const children = [el("span", { class: "label" }, label), valueRow];
+    if (sub) children.push(el("span", { class: "sub" }, sub));
+    return el("div", { class: "cell" }, children);
+  };
+
+  // FILE: basename + size (full path on hover)
+  const fullPath = state.file && state.file.path ? state.file.path : "";
+  const basename = fullPath ? fullPath.split("/").pop() : "(unknown)";
+  bar.appendChild((() => {
+    const c = cell("File", [basename], formatBytes(s.file_size_bytes));
+    c.title = fullPath;
+    return c;
+  })());
+
+  // COMPOSITION
+  bar.appendChild(cell(
+    "Composition",
+    [s.topmost_composition_name || "(none)"],
+    `${s.composition_mob_count} comp · ${s.master_mob_count} master · ${s.source_mob_count} source mobs`
+  ));
+
+  // TRACKS
+  const trackVal = el("span", {}, [
+    el("span", { class: "value accent" }, String(s.audio_track_count)),
+    document.createTextNode(" audio"),
+    s.video_track_count
+      ? document.createTextNode(`  ·  ${s.video_track_count} video`)
+      : null,
+  ].filter(Boolean));
+  bar.appendChild(cell("Tracks", [trackVal],
+    s.timecode_track_count
+      ? `${s.timecode_track_count} timecode slot${s.timecode_track_count === 1 ? "" : "s"}`
+      : null));
+
+  // CLIPS
+  bar.appendChild(cell("Clips", [String(s.total_clip_count)],
+    "across all audio + video tracks"));
+
+  // TIMECODE
+  if (s.timecode) {
+    const tc = s.timecode;
+    const fpsLabel = tc.edit_rate_value
+      ? (Math.round(tc.edit_rate_value * 100) / 100).toString()
+      : (tc.fps_nominal ? String(tc.fps_nominal) : "?");
+    const drop = tc.drop ? "DF" : "NDF";
+    bar.appendChild(cell("TC rate", [`${fpsLabel} ${drop}`],
+      tc.edit_rate ? tc.edit_rate : null));
+    bar.appendChild(cell("Start TC",
+      [el("span", { class: "value accent" }, tc.start_timecode || "—")],
+      tc.start_frames != null ? `frame ${tc.start_frames}` : null));
+  }
+
+  // DURATION
+  if (s.duration_timecode || s.duration_seconds != null) {
+    bar.appendChild(cell("Duration",
+      [el("span", { class: "value warn" }, s.duration_timecode || "—")],
+      s.duration_seconds != null ? formatSecondsJs(s.duration_seconds) : null));
+  }
+
+  // AUDIO — sample rate / bit depth / channel-layout breakdown across
+  // all SourceMobs with usable descriptors. Render single-value cells
+  // when uniform, otherwise compact "mixed: A(n), B(m)" form.
+  if (s.audio && s.audio.audio_source_count > 0) {
+    bar.appendChild(cell(
+      "Sample rate",
+      [formatAudioField(s.audio.sample_rates, formatSampleRate)],
+      `${s.audio.audio_source_count} audio source${s.audio.audio_source_count === 1 ? "" : "s"}`
+    ));
+    bar.appendChild(cell(
+      "Bit depth",
+      [formatAudioField(s.audio.bit_depths, (b) => `${b}-bit`)],
+      null
+    ));
+    bar.appendChild(cell(
+      "Channels",
+      [formatAudioField(s.audio.channel_counts, formatChannelCount)],
+      null
+    ));
+  }
+
+  // AUTHORED — ProductName from the most recent Header.IdentificationList
+  // entry. Tells the operator at a glance which NLE wrote the file
+  // (Avid Media Composer, Premiere Pro, Pro Tools, etc.).
+  if (s.authoring && s.authoring.product_name) {
+    const a = s.authoring;
+    const subBits = [];
+    if (a.platform) subBits.push(a.platform);
+    if (a.identification_count > 1) subBits.push(`${a.identification_count} revisions`);
+    bar.appendChild(cell("Authored by",
+      [a.product_name],
+      subBits.join(" · ") || (a.company_name || null)));
+  }
+
+  // MODIFIED — Header.LastModified (or fallback to authoring date).
+  const modified = s.last_modified || (s.authoring && s.authoring.date) || null;
+  if (modified) {
+    bar.appendChild(cell("Modified", [formatDateShort(modified)], modified));
+  }
+}
+
+function formatAudioField(counts, labelFn) {
+  // Render an aggregated audio-format field: single value if uniform,
+  // otherwise "mixed: A(n) · B(m)" with the most common first. Returns
+  // a DOM node so we can highlight uniform values vs mixed ones.
+  const entries = Object.entries(counts || {})
+    .map(([k, v]) => [k, Number(v)])
+    .sort((a, b) => b[1] - a[1]);
+  if (entries.length === 0) return el("span", { class: "muted" }, "—");
+  if (entries.length === 1) {
+    return el("span", { class: "value accent" }, labelFn(entries[0][0]));
+  }
+  // Mixed — compact list, colored as a warning so it stands out.
+  const parts = entries.map(([k, n]) => `${labelFn(k)}(${n})`).join(" · ");
+  return el("span", { class: "value warn", title: "mixed across sources" }, parts);
+}
+
+function formatSampleRate(rate) {
+  // rate is the dict key, e.g. "48000/1" or "96000/1". Display as kHz.
+  if (typeof rate !== "string") return String(rate);
+  const m = rate.match(/^(\d+)(?:\/(\d+))?$/);
+  if (!m) return rate;
+  const num = Number(m[1]);
+  const den = m[2] ? Number(m[2]) : 1;
+  if (!den) return rate;
+  const hz = num / den;
+  if (hz >= 1000) return `${(hz / 1000).toFixed(hz % 1000 === 0 ? 0 : 1)} kHz`;
+  return `${hz} Hz`;
+}
+
+function formatChannelCount(c) {
+  const n = Number(c);
+  if (n === 1) return "mono";
+  if (n === 2) return "stereo";
+  if (n === 6) return "5.1";
+  if (n === 8) return "7.1";
+  return `${n}ch`;
+}
+
+function formatDateShort(iso) {
+  // Render an ISO timestamp as YYYY-MM-DD HH:MM. No timezone math —
+  // AAF files often carry the wall-clock time at write without TZ
+  // info; rendering the raw string is more honest than a guess.
+  if (!iso || typeof iso !== "string") return "—";
+  // Match "YYYY-MM-DDTHH:MM:SS" or "YYYY-MM-DD HH:MM:SS" prefix.
+  const m = iso.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/);
+  if (m) return `${m[1]} ${m[2]}`;
+  return iso.slice(0, 16);
+}
+
+function renderTrackList() {
+  const root = $("#track-list");
+  const summary = $("#tracks-summary");
+  root.replaceChildren();
+
+  if (!state.file) {
+    summary.textContent = "No file open.";
+    return;
+  }
+  const tracks = tracksState.tracks;
+  if (tracks.length === 0) {
+    summary.textContent = tracksState.topmost
+      ? "Topmost composition has no audio or video tracks."
+      : "No CompositionMob in this file. Use the All Mobs tab.";
+    return;
+  }
+  const compName = tracksState.topmost && tracksState.topmost.name
+    ? tracksState.topmost.name
+    : "(unnamed composition)";
+  summary.textContent =
+    `${tracks.length} track${tracks.length === 1 ? "" : "s"} — ${compName}`;
+
+  for (const t of tracks) {
+    const row = el(
+      "div",
+      {
+        class: "track-row kind-" + t.kind
+          + (tracksState.selectedSlotId === t.slot_id ? " selected" : ""),
+        dataset: { slotId: String(t.slot_id) },
+        onclick: () => selectTrack(t.slot_id),
+      },
+      [
+        el("span", { class: "track-ordinal" }, String(t.ordinal)),
+        el("span", { class: "track-kind-tag" }, t.kind),
+        (() => {
+          const n = el("span", { class: "track-name" + (t.name ? "" : " untitled") },
+            t.name || `slot ${t.slot_id}`);
+          return n;
+        })(),
+        el(
+          "span",
+          { class: "track-meta muted" },
+          [
+            `${t.clip_count} clip${t.clip_count === 1 ? "" : "s"}`,
+            t.length != null ? ` · len ${t.length}` : "",
+          ].join("")
+        ),
+      ]
+    );
+    root.appendChild(row);
+  }
+}
+
+async function selectTrack(slotId) {
+  tracksState.selectedSlotId = slotId;
+  // Clear per-track tree state (selection + expansion + caches)
+  tracksState.expanded = new Set();
+  tracksState.childrenCache = new Map();
+  tracksState.selectedNodeId = null;
+  tracksState.selectedNode = null;
+  $$(".track-row").forEach((r) =>
+    r.classList.toggle("selected", Number(r.dataset.slotId) === slotId)
   );
-  $$(".tab-pane").forEach((p) =>
-    p.classList.toggle("active", p.dataset.pane === which)
+  $("#clips-summary").replaceChildren(
+    el("span", { class: "spinner" }),
+    document.createTextNode(` Loading clips for slot ${slotId}…`),
   );
-  if (which === "cfb") loadCfbTreeIfNeeded();
+  $("#clips-tree").replaceChildren();
+  resetTracksInspector();
+  try {
+    const env = await api.trackClips(slotId);
+    tracksState.clips = env.clips || [];
+    renderClipsPane();
+  } catch (e) {
+    $("#clips-summary").textContent = "Error: " + (e.message || String(e));
+  }
+}
+
+function renderClipsPane() {
+  const summary = $("#clips-summary");
+  const root = $("#clips-tree");
+  root.replaceChildren();
+  if (!state.file) {
+    summary.textContent = "No file open.";
+    return;
+  }
+  if (tracksState.selectedSlotId == null) {
+    summary.textContent = "Select a track.";
+    return;
+  }
+  const clips = tracksState.clips;
+  if (clips.length === 0) {
+    summary.textContent = `Slot ${tracksState.selectedSlotId} — no clips.`;
+    return;
+  }
+  summary.textContent =
+    `Slot ${tracksState.selectedSlotId} — ${clips.length} clip${clips.length === 1 ? "" : "s"}`;
+  for (const clip of clips) {
+    root.appendChild(renderTreeNode(buildClipNode(clip)));
+  }
+}
+
+// ---------- tree node builders ----------
+
+function buildClipNode(clip) {
+  const id = `clip:${tracksState.selectedSlotId}:${clip.index}`;
+  return {
+    id,
+    kind: "clip",
+    data: clip,
+    rowClass: clip.is_recorder_source
+      ? "kind-clip-recorder"
+      : (clip.component_class === "SourceClip" ? "" : "kind-clip-other"),
+    expandable: clip.component_class === "SourceClip" && !!clip.source_mob_id,
+    renderRow: () => renderClipRowContent(clip),
+    fetchKids: async () => {
+      // Fetch the source MasterMob; its serialized subtree contains
+      // every nested aaf_object we need to descend through.
+      const env = await api.object({ mob_id: clip.source_mob_id });
+      const child = buildObjectNode({
+        idPrefix: id,
+        propPath: "",
+        propName: clip.source_mob_name
+          ? `→ ${clip.source_mob_name}`
+          : "→ source",
+        obj: env.object,
+      });
+      return [child];
+    },
+  };
+}
+
+function buildObjectNode({ idPrefix, propPath, propName, obj }) {
+  const subPath = (propPath ? propPath + "/" : "") + (propName || "");
+  const id = idPrefix + "::" + subPath;
+  const navigable = collectNavigableChildren(obj);
+  return {
+    id,
+    kind: "object",
+    data: obj,
+    propName,
+    rowClass: "",
+    expandable: navigable.length > 0,
+    renderRow: () => renderObjectRowContent(obj, propName),
+    fetchKids: async () =>
+      navigable.map((child) =>
+        buildObjectNode({
+          idPrefix,
+          propPath: subPath,
+          propName: child.label,
+          obj: child.obj,
+        })
+      ),
+  };
+}
+
+function collectNavigableChildren(obj) {
+  // Only StrongRef nested aaf_object values (and arrays of those) become
+  // tree children. Scalars and weakrefs render in the inspector for the
+  // selected node, not as separate tree rows.
+  const out = [];
+  const props = obj && obj.properties ? obj.properties : {};
+  for (const [pname, value] of Object.entries(props)) {
+    if (Array.isArray(value)) {
+      value.forEach((item, i) => {
+        if (item && item._type === "aaf_object") {
+          const nm = item.name ? `"${item.name}"` : tailMobId(item.mob_id || "");
+          out.push({
+            label: `${pname}[${i}] ${item.class || "?"}` + (nm ? ` ${nm}` : ""),
+            obj: item,
+          });
+        }
+      });
+    } else if (value && value._type === "aaf_object") {
+      const nm = value.name ? `"${value.name}"` : tailMobId(value.mob_id || "");
+      out.push({
+        label: `${pname} ${value.class || "?"}` + (nm ? ` ${nm}` : ""),
+        obj: value,
+      });
+    }
+  }
+  return out;
+}
+
+// ---------- generic tree renderer ----------
+
+function renderTreeNode(node) {
+  const isExpanded = tracksState.expanded.has(node.id);
+  const isSelected = tracksState.selectedNodeId === node.id;
+
+  const caret = el(
+    "span",
+    {
+      class: "tree-caret" + (node.expandable ? "" : " empty"),
+      onclick: (ev) => {
+        ev.stopPropagation();
+        if (node.expandable) toggleTreeExpand(node);
+      },
+    },
+    node.expandable ? (isExpanded ? "▼" : "▶") : ""
+  );
+  const label = el(
+    "span",
+    {
+      class: "tree-label",
+      onclick: (ev) => {
+        ev.stopPropagation();
+        selectTreeNode(node);
+      },
+    },
+    [node.renderRow()]
+  );
+  const row = el(
+    "div",
+    { class: "tree-row " + node.rowClass + (isSelected ? " selected" : "") },
+    [caret, label]
+  );
+
+  const host = el("div", { class: "tree-node", dataset: { nodeId: node.id } }, [row]);
+
+  if (isExpanded) {
+    const childHost = el("div", { class: "tree-children" });
+    const cached = tracksState.childrenCache.get(node.id);
+    if (cached === "loading") {
+      childHost.appendChild(el("div", { class: "tree-loading" }, "Loading…"));
+    } else if (cached && cached._error) {
+      childHost.appendChild(
+        el("div", { class: "tree-error" }, "Error: " + cached._error)
+      );
+    } else if (Array.isArray(cached)) {
+      if (cached.length === 0) {
+        childHost.appendChild(el("div", { class: "tree-loading" }, "(no children)"));
+      } else {
+        for (const childNode of cached) {
+          childHost.appendChild(renderTreeNode(childNode));
+        }
+      }
+    }
+    host.appendChild(childHost);
+  }
+  return host;
+}
+
+function renderClipRowContent(clip) {
+  const isSourceClip = clip.component_class === "SourceClip";
+
+  // Three-format start position: TC (most useful for sound operators),
+  // mm:ss.fff (intuitive duration sense), and the raw slot-edit-rate
+  // unit count (debugging / chain-walk math). Use sessionState.timecode
+  // + the track's edit_rate to compute. Each is null-safe.
+  const tc = sessionState.timecode;
+  const rateValue = tracksState.editRateValue;  // set when tracks load
+  let posTc = null;
+  if (tc && tc.fps_nominal != null && clip.timeline_start != null) {
+    posTc = formatTimecodeJs(
+      (tc.start_frames || 0) + clip.timeline_start,
+      tc.fps_nominal,
+      !!tc.drop
+    );
+  }
+  let posSecs = null;
+  if (rateValue && clip.timeline_start != null) {
+    posSecs = formatSecondsJs(clip.timeline_start / rateValue);
+  }
+  const posRaw = clip.timeline_start != null ? String(clip.timeline_start) : "";
+
+  // Length in slot-edit-rate units, and a TC-style duration when we
+  // have a frame rate.
+  let lenStr = "";
+  if (clip.length != null) {
+    if (tc && tc.fps_nominal != null) {
+      lenStr = formatTimecodeJs(clip.length, tc.fps_nominal, !!tc.drop);
+    } else {
+      lenStr = String(clip.length);
+    }
+  }
+
+  const pos = el("span", { class: "clip-pos" }, [
+    el("span", { class: "pos-tc", title: "absolute timecode" }, posTc || "—"),
+    el("span", { class: "pos-secs", title: "elapsed seconds on the timeline" }, posSecs || "—"),
+    el("span", { class: "pos-raw", title: "raw count in slot edit-rate units" }, posRaw),
+  ]);
+
+  const text = el("span", { class: "clip-text" });
+  if (!isSourceClip) {
+    text.appendChild(el("span", { class: "reason" }, clip.component_class.toLowerCase()));
+  } else {
+    if (clip.mic_identity) {
+      text.appendChild(el("span", { class: "mic" }, clip.mic_identity));
+    }
+    if (clip.source_mob_name) {
+      text.appendChild(el(
+        "span",
+        { class: "src" },
+        clip.mic_identity ? ` ← ${clip.source_mob_name}` : clip.source_mob_name
+      ));
+    } else if (!clip.mic_identity) {
+      text.appendChild(el("span", { class: "src" }, "(unnamed source)"));
+    }
+    if (clip.terminal_reason && clip.terminal_reason !== "essence") {
+      text.appendChild(el("span", { class: "reason" }, `[${clip.terminal_reason}]`));
+    }
+    if (clip.physical_track_number != null && !clip.is_recorder_source) {
+      text.appendChild(el("span", { class: "reason" }, `ptn ${clip.physical_track_number}`));
+    }
+  }
+  return el("span", { class: "tree-row-grid" }, [
+    pos,
+    el("span", { class: "clip-len", title: "duration" }, lenStr),
+    text,
+  ]);
+}
+
+// ---------- TC + seconds formatters (mirrors core/operator.py) ----------
+
+function pad2(n) { return String(n).padStart(2, "0"); }
+
+function parseRational(s) {
+  if (!s || typeof s !== "string") return null;
+  const parts = s.split("/").map(Number);
+  if (parts.length !== 2 || !parts[1]) return null;
+  return parts[0] / parts[1];
+}
+
+function formatTimecodeJs(frames, fpsNominal, drop) {
+  if (frames == null || fpsNominal == null) return null;
+  let f = Math.floor(Number(frames));
+  const fps = Number(fpsNominal) | 0;
+  if (fps <= 0) return null;
+  let sep = ":";
+  if (drop && (fps === 30 || fps === 60)) {
+    const dropFrames = fps === 30 ? 2 : 4;
+    const fpm = (60 * fps) - dropFrames;
+    const fp10m = (10 * 60 * fps) - 9 * dropFrames;
+    const d = Math.floor(f / fp10m);
+    const m = f % fp10m;
+    if (m > dropFrames) {
+      f += (dropFrames * 9 * d) + dropFrames * Math.floor((m - dropFrames) / fpm);
+    } else {
+      f += dropFrames * 9 * d;
+    }
+    sep = ";";
+  }
+  const fr = f % fps;
+  const sec = Math.floor(f / fps) % 60;
+  const mn = Math.floor(f / (fps * 60)) % 60;
+  const hr = Math.floor(f / (fps * 60 * 60));
+  return `${pad2(hr)}:${pad2(mn)}:${pad2(sec)}${sep}${pad2(fr)}`;
+}
+
+function formatSecondsJs(seconds) {
+  if (seconds == null || !isFinite(seconds)) return null;
+  const total = Math.abs(seconds);
+  const sign = seconds < 0 ? "-" : "";
+  const hr = Math.floor(total / 3600);
+  const mn = Math.floor((total % 3600) / 60);
+  const sc = total - hr * 3600 - mn * 60;
+  const scStr = sc.toFixed(3).padStart(6, "0");
+  return hr > 0 ? `${sign}${hr}:${pad2(mn)}:${scStr}` : `${sign}${mn}:${scStr}`;
+}
+
+function formatBytes(b) {
+  if (b == null) return "—";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let u = 0, n = b;
+  while (n >= 1024 && u < units.length - 1) { n /= 1024; u++; }
+  if (n < 10) return `${n.toFixed(2)} ${units[u]}`;
+  if (n < 100) return `${n.toFixed(1)} ${units[u]}`;
+  return `${n.toFixed(0)} ${units[u]}`;
+}
+
+function renderObjectRowContent(obj, propName) {
+  // For a tree node representing a nested aaf_object, show its property
+  // path label (the prop name passed in) plus the object class + name.
+  const cls = obj.class || "?";
+  const text = el("span", { class: "clip-text" });
+  if (propName) {
+    text.appendChild(el("span", { class: "obj-prop" }, propName));
+  } else {
+    text.appendChild(el("span", { class: "obj-class" }, cls));
+    if (obj.name) text.appendChild(el("span", { class: "obj-name" }, `"${obj.name}"`));
+    else if (obj.mob_id) {
+      text.appendChild(el("span", { class: "obj-name" }, tailMobId(obj.mob_id)));
+    }
+  }
+  return text;
+}
+
+function formatSamples(n) {
+  return n == null ? "" : String(n);
+}
+
+function toggleTreeExpand(node) {
+  if (tracksState.expanded.has(node.id)) {
+    tracksState.expanded.delete(node.id);
+    renderClipsPane();
+    return;
+  }
+  tracksState.expanded.add(node.id);
+  // Lazy-fetch children if not cached yet.
+  if (!tracksState.childrenCache.has(node.id)) {
+    tracksState.childrenCache.set(node.id, "loading");
+    renderClipsPane();
+    Promise.resolve()
+      .then(() => node.fetchKids())
+      .then((kids) => {
+        tracksState.childrenCache.set(node.id, kids || []);
+        renderClipsPane();
+      })
+      .catch((e) => {
+        tracksState.childrenCache.set(node.id, { _error: e.message || String(e) });
+        renderClipsPane();
+      });
+  } else {
+    renderClipsPane();
+  }
+}
+
+function selectTreeNode(node) {
+  tracksState.selectedNodeId = node.id;
+  tracksState.selectedNode = node;
+  // Update selection highlight without a full re-render of the tree
+  // (re-render would also lose any in-progress focus state).
+  $$("#clips-tree .tree-row").forEach((r) => r.classList.remove("selected"));
+  const dom = document.querySelector(
+    `#clips-tree .tree-node[data-node-id="${cssEscape(node.id)}"] > .tree-row`
+  );
+  if (dom) dom.classList.add("selected");
+  renderTracksInspector();
+}
+
+// ---------- inspector for the tracks-view selection ----------
+
+function resetTracksInspector() {
+  // Clear breadcrumb + inspector when no selection, so switching tracks
+  // doesn't leave stale content from the previous selection.
+  $("#breadcrumb").replaceChildren();
+  $("#inspector").replaceChildren(
+    el("p", { class: "muted" }, "Select a clip or expanded child to inspect it.")
+  );
+}
+
+function renderTracksInspector() {
+  const node = tracksState.selectedNode;
+  if (!node) return resetTracksInspector();
+  if (node.kind === "clip") return renderClipInspector(node.data);
+  if (node.kind === "object") return renderObjectInspector(node.data, node.propName);
+  resetTracksInspector();
+}
+
+function renderClipInspector(clip) {
+  // Just the operator summary for the selected clip — no auto-fetch of
+  // the source mob. The user expands the tree to navigate into the
+  // source; selecting a deeper node updates the inspector to that level.
+  $("#breadcrumb").replaceChildren(
+    el("span", { class: "muted" }, "track "),
+    el("span", { class: "crumb head" },
+      `slot ${tracksState.selectedSlotId} / clip ${clip.index}`),
+  );
+  $("#inspector").replaceChildren(operatorSummaryFor(clip));
+}
+
+function renderObjectInspector(obj, propName) {
+  // The selected node is a nested AAF object reached via the tree.
+  // Show ONLY this object's information — its class header, its
+  // mob_id, and the existing property table. Nested-property
+  // expansion within the inspector is the existing
+  // populateNestedObject behavior (independent of the center-pane
+  // tree's expansion).
+  const labelBits = [];
+  if (propName) labelBits.push(el("span", { class: "muted" }, propName + " "));
+  labelBits.push(el(
+    "span",
+    { class: "crumb head" },
+    obj.name ? `${obj.class || "?"} "${obj.name}"` : (obj.class || "?")
+  ));
+  $("#breadcrumb").replaceChildren(...labelBits);
+  $("#inspector").replaceChildren(renderObjectInline(obj));
+}
+
+function operatorSummaryFor(clip) {
+  // Operator-meaningful summary for an operator_clip. Stands apart
+  // from the existing geek-view object dump via .operator-summary.
+  const dl = el("dl");
+  const row = (k, v, cls) => {
+    dl.appendChild(el("dt", {}, k));
+    dl.appendChild(el("dd", cls ? { class: cls } : {}, v == null ? "—" : String(v)));
+  };
+  row("Component", clip.component_class);
+  row("Timeline start", clip.timeline_start);
+  row("Length", clip.length);
+  if (clip.component_class === "SourceClip") {
+    row("Source MasterMob", clip.source_mob_name || "(unnamed)");
+    row("Source slot", clip.source_mob_slot_id);
+    row("Recovered mic", clip.mic_identity || "(none)",
+        clip.mic_identity ? "mic" : "muted");
+    row("Recorder source?", clip.is_recorder_source ? "yes" : "no");
+    row("PhysicalTrackNumber", clip.physical_track_number);
+    row("Chain hops", clip.chain_length);
+    row("Terminal reason", clip.terminal_reason);
+  }
+  return el("section", { class: "operator-summary" }, [
+    el("h4", {}, "Operator summary"),
+    dl,
+  ]);
+}
+
+// Render an aaf_object the same way the geek-view inspector does,
+// reusing its property-row + nested-expansion helpers.
+function renderObjectInline(obj) {
+  const host = el("div", { class: "operator-nested-object" });
+  const header = el("div", { class: "obj-header" }, [
+    el("span", { class: "class-tag" }, obj.class || "?"),
+    obj.name ? el("span", { class: "obj-name" }, obj.name) : null,
+    obj.mob_id
+      ? el("span", { class: "obj-mob-id", title: obj.mob_id }, obj.mob_id)
+      : null,
+  ].filter(Boolean));
+  host.appendChild(header);
+  const tbl = el("div", { class: "props-table" });
+  const props = obj.properties || {};
+  for (const pname of Object.keys(props)) {
+    tbl.appendChild(renderPropertyRow(pname, props[pname]));
+  }
+  host.appendChild(tbl);
+  return host;
+}
+
+// ---------- splitter drag handlers ----------
+
+function wireSplitters() {
+  $$(".splitter").forEach((sp) => {
+    sp.addEventListener("pointerdown", (ev) => beginResize(ev, sp));
+  });
+}
+
+function beginResize(ev, sp) {
+  ev.preventDefault();
+  const varName = sp.dataset.resize;
+  const min = Number(sp.dataset.min || "120");
+  const max = Number(sp.dataset.max || "1200");
+  // Read current pixel width from the resolved CSS variable.
+  const cs = getComputedStyle(document.body);
+  const startWidth = parseFloat(cs.getPropertyValue(varName)) || 240;
+  const startX = ev.clientX;
+  sp.classList.add("dragging");
+  document.body.classList.add("resizing");
+  sp.setPointerCapture(ev.pointerId);
+
+  const onMove = (e) => {
+    const delta = e.clientX - startX;
+    const next = Math.max(min, Math.min(max, startWidth + delta));
+    document.body.style.setProperty(varName, next + "px");
+  };
+  const onUp = (e) => {
+    sp.releasePointerCapture(ev.pointerId);
+    sp.classList.remove("dragging");
+    document.body.classList.remove("resizing");
+    sp.removeEventListener("pointermove", onMove);
+    sp.removeEventListener("pointerup", onUp);
+    sp.removeEventListener("pointercancel", onUp);
+  };
+  sp.addEventListener("pointermove", onMove);
+  sp.addEventListener("pointerup", onUp);
+  sp.addEventListener("pointercancel", onUp);
 }
 
 // ---------- bootstrap ----------
 
 async function init() {
   wireTopbar();
-  wireTabs();
+  wireViewTabs();
+  wireSplitters();
   wireFilter();
   wireCfbControls();
   wireFindPanel();
   setFileStatus();
   renderMobList();
+  renderTrackList();
+  renderClipsPane();
+  // Default landing: Tracks view
+  activateView("tracks");
 
-  // If a file was opened via `aafbrowser web <path>`, the server already
-  // has it loaded — fetch metadata and mob list at startup.
+  // If a file was opened via `aafbrowser web <path>` (or by the
+  // bundled .app's argv), the server already has it loaded — fetch
+  // the index + tracks. Wrap in the loading-state UI: even though
+  // /api/file is fast, /api/tracks does the chain-walks for the
+  // topmost composition's slots and is worth flagging.
   try {
     const meta = await api.file();
     if (meta) {
-      state.file = meta;
-      setFileStatus();
-      renderClassFilterOptions();
-      syncWindowTitle();
-      const mobs = await api.mobs();
-      state.mobs = mobs.mobs;
-      renderMobList();
+      const basename = meta.path.split("/").pop();
+      beginAafLoading(basename);
+      try {
+        state.file = meta;
+        renderClassFilterOptions();
+        const mobs = await api.mobs();
+        state.mobs = mobs.mobs;
+        renderMobList();
+        await Promise.all([loadSession(), loadTracks()]);
+      } finally {
+        endAafLoading();
+      }
     }
   } catch (_) { /* no-op; user can open manually */ }
 }

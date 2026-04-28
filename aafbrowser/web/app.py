@@ -30,6 +30,7 @@ from flask import Flask, jsonify, request
 from aafbrowser.core import aaf as aaf_walker
 from aafbrowser.core import cfb as cfb_walker
 from aafbrowser.core import chain as chain_mod
+from aafbrowser.core import operator as operator_mod
 from aafbrowser.core import resolver as resolver_mod
 
 from . import state as state_mod
@@ -555,6 +556,113 @@ def _register_routes(app: Flask) -> None:
                 "slot_id": slot_id,
             },
             "hops": [h.to_dict() for h in hops],
+        })
+
+
+    @app.get("/api/tracks")
+    @_require_open
+    def api_tracks():
+        """
+        Operator-layer view of the file: ordered list of audio + video
+        tracks on the topmost CompositionMob, plus timecode info so the
+        frontend can render per-clip timeline positions in samples /
+        seconds / TC. Empty tracks list (not 404) when the file has no
+        CompositionMobs — the frontend renders an empty Tracks state
+        with a hint pointing at the All Mobs tab.
+        """
+        with state_mod.state_lock():
+            if not state_mod.is_open():
+                return _err(409, "no_file_open")
+            handle = state_mod._state.handle
+            sha = state_mod._state.sha256
+            try:
+                tracks = operator_mod.list_tracks(handle)
+                comp = operator_mod.pick_topmost_composition(handle)
+                comp_meta = None
+                tc_dict = None
+                if comp is not None:
+                    nm = getattr(comp, "name", None)
+                    comp_meta = {
+                        "mob_id": str(getattr(comp, "mob_id", "")) or None,
+                        "name": nm if isinstance(nm, str) else None,
+                    }
+                    tc = operator_mod._build_timecode_info(comp)
+                    if tc is not None:
+                        tc_dict = tc.to_dict()
+            except Exception as exc:
+                return _internal(exc)
+
+        return jsonify({
+            "sha256": sha,
+            "topmost_composition": comp_meta,
+            "timecode": tc_dict,
+            "tracks": [t.to_dict() for t in tracks],
+        })
+
+    @app.get("/api/session")
+    @_require_open
+    def api_session():
+        """
+        Headline summary of the open file for the top info bar:
+        composition name, track + clip + mob counts, timecode info,
+        duration. Cheap to compute (no per-clip walks).
+        """
+        with state_mod.state_lock():
+            if not state_mod.is_open():
+                return _err(409, "no_file_open")
+            handle = state_mod._state.handle
+            sha = state_mod._state.sha256
+            path = state_mod._state.path
+            file_size = None
+            if path:
+                try:
+                    file_size = os.path.getsize(path)
+                except OSError:
+                    file_size = None
+            try:
+                summary = operator_mod.session_summary(
+                    handle, file_size_bytes=file_size,
+                )
+            except Exception as exc:
+                return _internal(exc)
+        return jsonify({
+            "sha256": sha,
+            "path": path,
+            "session": summary.to_dict(),
+        })
+
+    @app.get("/api/track/clips")
+    @_require_open
+    def api_track_clips():
+        """
+        Clips on a single slot of the topmost CompositionMob. Each clip
+        carries operator-summary fields (recovered mic identity from the
+        chain walk, source mob name, terminal reason).
+        """
+        slot_raw = request.args.get("slot")
+        if slot_raw is None:
+            return _err(400, "bad_request", "missing 'slot'")
+        try:
+            slot_id = int(slot_raw)
+        except ValueError:
+            return _err(400, "bad_request", "slot must be an integer")
+
+        with state_mod.state_lock():
+            if not state_mod.is_open():
+                return _err(409, "no_file_open")
+            handle = state_mod._state.handle
+            sha = state_mod._state.sha256
+            try:
+                clips = operator_mod.list_clips(handle, slot_id)
+            except ValueError as exc:
+                return _err(404, "not_found", str(exc))
+            except Exception as exc:
+                return _internal(exc)
+
+        return jsonify({
+            "sha256": sha,
+            "slot_id": slot_id,
+            "clips": [c.to_dict() for c in clips],
         })
 
 

@@ -21,6 +21,14 @@
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --row-h: 22px;
+
+  /* Per-view column widths. JS splitter drag updates these inline on
+     <body> so they persist across re-renders within a session. */
+  --col-tracks: 240px;
+  --col-clips: 480px;
+  --col-mobs: 360px;
+  --col-cfb: 360px;
+  --splitter: 4px;
 }
 
 * { box-sizing: border-box; }
@@ -69,6 +77,41 @@ input[type="text"]:focus, input[type="number"]:focus, select:focus {
 .muted { color: var(--fg-muted); }
 .faint { color: var(--fg-faint); }
 .error { color: var(--error); }
+
+/* ---------- spinner ---------- */
+
+@keyframes aaf-spin { to { transform: rotate(360deg); } }
+.spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: aaf-spin 0.8s linear infinite;
+  vertical-align: middle;
+  /* flex-shrink (not the full flex shorthand) so the spinner keeps its
+     intrinsic width inside flex containers. The `flex: 0 0 12px`
+     shorthand we had before was setting flex-basis=12px, which trumped
+     the `width: 20px` set by the .large variant — making the large
+     spinner render as a 12×20 oval inside a flex container. */
+  flex-shrink: 0;
+}
+.spinner.large {
+  width: 20px;
+  height: 20px;
+  border-width: 3px;
+}
+button.loading { opacity: 0.7; cursor: progress; }
+.loading-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px;
+  color: var(--fg-muted);
+  font-family: var(--mono);
+  font-size: 12px;
+}
 
 /* ---------- topbar ---------- */
 
@@ -201,52 +244,156 @@ dialog#open-dialog .error {
   font-family: var(--mono);
 }
 
-/* ---------- main layout ---------- */
+/* ---------- session-info bar ---------- */
 
-#layout {
-  display: grid;
-  grid-template-columns: 360px 1fr;
-  flex: 1 1 0;
-  min-height: 0;
+#session-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 0;
+  padding: 8px 14px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  overflow-x: auto;
 }
-
-#left {
-  border-right: 1px solid var(--border);
+#session-bar[hidden] { display: none; }
+#session-bar .cell {
   display: flex;
   flex-direction: column;
-  min-height: 0;
+  gap: 1px;
+  padding: 0 14px;
+  border-right: 1px solid var(--border);
+  white-space: nowrap;
+  min-width: 0;
+}
+#session-bar .cell:first-child { padding-left: 0; }
+#session-bar .cell:last-child { border-right: none; padding-right: 0; }
+#session-bar .cell .label {
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+}
+#session-bar .cell .value {
+  color: var(--fg);
+}
+#session-bar .cell .value.accent { color: var(--accent); }
+#session-bar .cell .value.warn { color: var(--accent-warm); }
+#session-bar .cell .sub {
+  font-size: 10px;
+  color: var(--fg-faint);
 }
 
-#left .tabs {
+/* ---------- view-tabs (top-level navigation) ---------- */
+
+#view-tabs {
   display: flex;
   border-bottom: 1px solid var(--border);
   background: var(--bg-elev);
+  flex: 0 0 auto;
 }
-#left .tabs .tab {
-  flex: 1;
+#view-tabs .view-tab {
   border: none;
   background: transparent;
   border-radius: 0;
   border-bottom: 2px solid transparent;
-  padding: 8px 12px;
+  padding: 8px 18px;
   color: var(--fg-muted);
   font-family: var(--mono);
   font-size: 12px;
   letter-spacing: 0.5px;
+  cursor: pointer;
 }
-#left .tabs .tab.active {
+#view-tabs .view-tab:hover { color: var(--fg); }
+#view-tabs .view-tab.active {
   color: var(--fg);
   border-bottom-color: var(--accent);
   background: var(--bg);
 }
 
-.tab-pane {
-  display: none;
-  flex-direction: column;
-  flex: 1;
+/* ---------- main layout ---------- */
+
+/*
+ * Single grid that reshapes per active view via body classes.
+ * The shared inspector (#inspector-pane) is always present and slides
+ * into whichever column the active view layout assigns it.
+ *
+ * - view-tracks: 3 cols  [tracks-pane | clips-pane | inspector]
+ * - view-mobs:   2 cols  [mobs-pane   | inspector]
+ * - view-cfb:    2 cols  [cfb-pane    | inspector]
+ */
+#layout {
+  display: grid;
+  flex: 1 1 0;
   min-height: 0;
 }
-.tab-pane.active { display: flex; }
+
+/*
+ * minmax(0, 1fr) on the inspector column lets it shrink below its
+ * content's intrinsic width so a long property value scrolls inside
+ * the inspector instead of pushing the whole grid wider. The other
+ * columns are fixed-width via CSS variables that the splitter drag
+ * handler updates.
+ */
+body.view-tracks #layout {
+  grid-template-columns:
+    var(--col-tracks) var(--splitter)
+    var(--col-clips) var(--splitter)
+    minmax(0, 1fr);
+}
+body.view-mobs #layout {
+  grid-template-columns: var(--col-mobs) var(--splitter) minmax(0, 1fr);
+}
+body.view-cfb #layout {
+  grid-template-columns: var(--col-cfb) var(--splitter) minmax(0, 1fr);
+}
+
+/* ---------- splitters ---------- */
+
+.splitter {
+  background: var(--border);
+  cursor: col-resize;
+  user-select: none;
+  position: relative;
+  z-index: 1;
+}
+.splitter:hover {
+  background: var(--accent);
+}
+.splitter.dragging {
+  background: var(--accent);
+}
+body.resizing {
+  cursor: col-resize !important;
+  user-select: none;
+}
+body.resizing * {
+  user-select: none !important;
+}
+
+/* Per-view visibility: only the active view's left/center panes are
+   shown; the inspector is always shown. */
+.view-tracks-only,
+.view-mobs-only,
+.view-cfb-only { display: none; }
+body.view-tracks .view-tracks-only { display: flex; }
+body.view-mobs .view-mobs-only { display: flex; }
+body.view-cfb .view-cfb-only { display: flex; }
+
+.left-pane {
+  border-right: 1px solid var(--border);
+  flex-direction: column;
+  min-height: 0;
+}
+
+#clips-pane {
+  border-right: 1px solid var(--border);
+  flex-direction: column;
+  min-height: 0;
+}
 
 .filter-row {
   padding: 8px 10px;
@@ -265,7 +412,10 @@ dialog#open-dialog .error {
 }
 
 .scroll-list {
-  overflow-y: auto;
+  /* Both axes scroll: rows use white-space: nowrap so deep tree
+     children overflow horizontally on narrow panes; vertical scroll
+     handles long lists. */
+  overflow: auto;
   flex: 1;
   padding: 4px 0;
 }
@@ -331,13 +481,244 @@ dialog#open-dialog .error {
 .badge.mob-id { cursor: pointer; }
 .badge.mob-id:hover { color: var(--accent); border-color: var(--accent); }
 
-/* ---------- right pane ---------- */
+/* ---------- right pane (shared inspector) ---------- */
 
-#right {
+#inspector-pane {
   display: flex;
   flex-direction: column;
   min-height: 0;
   min-width: 0;
+}
+
+/* ---------- track list (operator left column) ---------- */
+
+.track-row {
+  display: grid;
+  /* Wide enough for "AUDIO" / "VIDEO" labels without clipping at the
+     default 11px / monospace font size. */
+  grid-template-columns: 28px 52px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 14px 4px 10px;
+  cursor: pointer;
+  height: var(--row-h);
+  white-space: nowrap;
+  overflow: hidden;
+  border-bottom: 1px solid transparent;
+}
+.track-row:hover { background: var(--hover-bg); }
+.track-row.selected { background: var(--selected-bg); }
+.track-row .track-ordinal {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+  text-align: right;
+}
+.track-row .track-kind-tag {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-align: center;
+  padding: 1px 4px;
+  border-radius: 2px;
+  background: var(--bg-elev-2);
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: 0.5px;
+  line-height: 14px;
+}
+.track-row.kind-audio .track-kind-tag {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.track-row.kind-video .track-kind-tag {
+  color: var(--accent-warm);
+  border-color: var(--accent-warm);
+}
+.track-row .track-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.track-row .track-name.untitled {
+  font-style: italic;
+  color: var(--fg-faint);
+}
+.track-row .track-meta {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+/* ---------- clip / object tree (operator center column) ---------- */
+
+#clips-pane #clips-tree {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 4px 0 12px;
+}
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 14px 3px 4px;
+  white-space: nowrap;
+  /* Size to the row's natural content width (no clipping). The parent
+     .scroll-list has overflow: auto; when any row's content exceeds
+     the pane width, the pane gains a horizontal scrollbar. Without
+     min-width: max-content the row would shrink to fit and we'd never
+     get a scrollbar — only ellipsized cells. */
+  min-width: max-content;
+  border-left: 3px solid transparent;
+  cursor: default;
+}
+.tree-row:hover { background: var(--hover-bg); }
+.tree-row.selected {
+  background: var(--selected-bg);
+  border-left-color: var(--accent);
+}
+
+.tree-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  font-size: 9px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  flex: 0 0 14px;
+}
+.tree-caret.empty { cursor: default; visibility: hidden; }
+.tree-caret:hover { color: var(--accent); }
+
+.tree-label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex: 0 0 auto;
+  cursor: pointer;
+}
+.tree-label .clip-pos {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+  flex: 0 0 auto;
+}
+.tree-label .clip-pos .pos-tc {
+  color: var(--accent);
+  font-weight: 600;
+  min-width: 92px;
+  display: inline-block;
+}
+.tree-label .clip-pos .pos-secs {
+  color: var(--fg-muted);
+  min-width: 64px;
+  display: inline-block;
+  text-align: right;
+}
+.tree-label .clip-pos .pos-raw {
+  color: var(--fg-faint);
+  min-width: 64px;
+  display: inline-block;
+  text-align: right;
+}
+.tree-label .clip-len {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+  flex: 0 0 80px;
+  text-align: right;
+}
+.tree-label .clip-text {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  /* No truncation — the row sizes to fit and the pane scrolls
+     horizontally when the content is wider than the pane. */
+}
+.tree-label .mic { color: var(--accent); margin-right: 6px; }
+.tree-label .src { color: var(--fg); }
+.tree-label .reason {
+  color: var(--fg-faint);
+  font-style: italic;
+  font-size: 11px;
+  margin-left: 6px;
+}
+.tree-label .obj-class {
+  color: var(--accent-warm);
+  font-weight: 600;
+  margin-right: 6px;
+}
+.tree-label .obj-name {
+  color: var(--fg);
+  font-style: italic;
+}
+.tree-label .obj-prop {
+  color: var(--fg-muted);
+  font-size: 11px;
+  margin-right: 6px;
+}
+.tree-row.kind-clip-recorder { border-left-color: var(--accent-warm); }
+.tree-row.kind-clip-recorder.selected { border-left-color: var(--accent); }
+.tree-row.kind-clip-other { color: var(--fg-muted); }
+
+.tree-children {
+  margin-left: 16px;
+  border-left: 1px dotted var(--border);
+  padding-left: 6px;
+}
+.tree-children .tree-loading,
+.tree-children .tree-error {
+  padding: 4px 0 4px 6px;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+.tree-children .tree-error { color: var(--error); }
+
+/* Operator-summary header on the inspector pane (Phase 6). Sits above
+   the existing raw-object dump for known operator-meaningful types. */
+.operator-summary {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent-warm);
+  border-radius: 3px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.operator-summary h4 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+}
+.operator-summary dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 4px 12px;
+}
+.operator-summary dt {
+  color: var(--fg-muted);
+}
+.operator-summary dd {
+  margin: 0;
+  color: var(--fg);
+  word-break: break-all;
+}
+.operator-summary dd.mic {
+  color: var(--accent);
+}
+.operator-summary dd.muted {
+  color: var(--fg-faint);
+  font-style: italic;
 }
 
 .breadcrumb {

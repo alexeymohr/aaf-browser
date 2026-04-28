@@ -110,6 +110,15 @@ def test_every_endpoint_leaves_input_byte_identical(client, minimal_aaf_copy):
     client.get(f"/api/resolve?ref=Mobs/{urn}/Slots/0/Segment")
     check("resolve")
 
+    # Operator layer (Phase 6) — tracks list, session summary, and
+    # clips for each track. minimal_aaf has no CompositionMob so
+    # /api/tracks returns an empty list and /api/track/clips returns
+    # 404; both still must leave the file unchanged.
+    client.get("/api/tracks")
+    client.get("/api/session")
+    client.get("/api/track/clips?slot=1")
+    check("operator")
+
     # Close
     r = client.post("/api/close")
     assert r.status_code == 200

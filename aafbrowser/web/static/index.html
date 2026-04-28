@@ -6,7 +6,7 @@
   <title>aafbrowser</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
-<body>
+<body class="view-tracks">
   <header id="topbar">
     <div class="brand">aafbrowser</div>
     <div class="file-info">
@@ -40,6 +40,20 @@
     </div>
   </header>
 
+  <section id="session-bar" hidden>
+    <!-- Cells populated by renderSessionBar() — see app.js. Each cell
+         is one operator-meaningful headline fact about the open file. -->
+  </section>
+
+  <nav id="view-tabs" role="tablist">
+    <button class="view-tab active" data-view="tracks" type="button"
+            role="tab" aria-selected="true">Tracks</button>
+    <button class="view-tab" data-view="mobs" type="button"
+            role="tab" aria-selected="false">All Mobs</button>
+    <button class="view-tab" data-view="cfb" type="button"
+            role="tab" aria-selected="false">CFB</button>
+  </nav>
+
   <dialog id="open-dialog">
     <form method="dialog" id="open-form">
       <label for="open-path">Path to AAF file</label>
@@ -54,35 +68,58 @@
   </dialog>
 
   <main id="layout">
-    <aside id="left">
-      <div class="tabs">
-        <button class="tab active" data-tab="aaf" type="button">AAF</button>
-        <button class="tab" data-tab="cfb" type="button">CFB</button>
+    <!-- Tracks view: track list (col 1), clips on selected track (col 3),
+         shared inspector (col 5). Splitters in cols 2 and 4 are
+         drag-resizable. Visible when body.view-tracks. -->
+    <aside id="tracks-pane" class="left-pane view-tracks-only">
+      <div class="filter-row">
+        <span id="tracks-summary" class="muted">No file open.</span>
       </div>
-
-      <section class="tab-pane active" data-pane="aaf">
-        <div class="filter-row">
-          <input id="mob-filter" type="text" placeholder="filter by name…"
-                 autocomplete="off" spellcheck="false">
-        </div>
-        <div id="mob-list" class="scroll-list"></div>
-      </section>
-
-      <section class="tab-pane" data-pane="cfb">
-        <div class="filter-row">
-          <label class="check">
-            <input type="checkbox" id="cfb-include-metadict">
-            include MetaDictionary
-          </label>
-        </div>
-        <div id="cfb-tree" class="scroll-list"></div>
-      </section>
+      <div id="track-list" class="scroll-list"></div>
     </aside>
+    <div class="splitter view-tracks-only" data-resize="--col-tracks"
+         data-min="160" data-max="600"></div>
+    <section id="clips-pane" class="view-tracks-only">
+      <div class="filter-row">
+        <span id="clips-summary" class="muted">Select a track.</span>
+      </div>
+      <div id="clips-tree" class="scroll-list"></div>
+    </section>
+    <div class="splitter view-tracks-only" data-resize="--col-clips"
+         data-min="240" data-max="900"></div>
 
-    <section id="right">
+    <!-- All Mobs view: mob list (col 1), shared inspector (col 3).
+         Splitter in col 2. Visible when body.view-mobs. -->
+    <aside id="mobs-pane" class="left-pane view-mobs-only">
+      <div class="filter-row">
+        <input id="mob-filter" type="text" placeholder="filter by name…"
+               autocomplete="off" spellcheck="false">
+      </div>
+      <div id="mob-list" class="scroll-list"></div>
+    </aside>
+    <div class="splitter view-mobs-only" data-resize="--col-mobs"
+         data-min="220" data-max="700"></div>
+
+    <!-- CFB view: cfb tree (col 1), shared inspector (col 3).
+         Splitter in col 2. Visible when body.view-cfb. -->
+    <aside id="cfb-pane" class="left-pane view-cfb-only">
+      <div class="filter-row">
+        <label class="check">
+          <input type="checkbox" id="cfb-include-metadict">
+          include MetaDictionary
+        </label>
+      </div>
+      <div id="cfb-tree" class="scroll-list"></div>
+    </aside>
+    <div class="splitter view-cfb-only" data-resize="--col-cfb"
+         data-min="220" data-max="700"></div>
+
+    <!-- Shared inspector. Last grid cell — gets minmax(0, 1fr) so its
+         width stays stable as content changes. -->
+    <section id="inspector-pane">
       <nav id="breadcrumb" class="breadcrumb"></nav>
       <div id="inspector" class="inspector">
-        <p class="muted">Open a file, then select a Mob to inspect it.</p>
+        <p class="muted">Open a file, then select something to inspect it.</p>
       </div>
     </section>
   </main>
@@ -110,6 +147,15 @@
       </summary>
       <div class="class-rows"></div>
     </details>
+  </template>
+
+  <template id="tpl-track-row">
+    <div class="track-row">
+      <span class="track-ordinal"></span>
+      <span class="track-kind-tag"></span>
+      <span class="track-name"></span>
+      <span class="track-meta muted"></span>
+    </div>
   </template>
 
   <script src="/static/app.js" defer></script>

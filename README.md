@@ -12,7 +12,8 @@ the briefs at [docs/phase1-brief.md](docs/phase1-brief.md) (CLI),
 [docs/phase2-brief.md](docs/phase2-brief.md) (web GUI),
 [docs/phase3-brief.md](docs/phase3-brief.md) (chain-walk + class-filtered find),
 [docs/phase4-brief.md](docs/phase4-brief.md) (macOS app + native file picker),
-and [docs/phase5-brief.md](docs/phase5-brief.md) (embedded WKWebView).
+[docs/phase5-brief.md](docs/phase5-brief.md) (embedded WKWebView),
+and [docs/phase6-brief.md](docs/phase6-brief.md) (operator-first browser layer).
 
 ## Install — macOS app (recommended)
 
@@ -154,9 +155,21 @@ aafbrowser web --host 0.0.0.0 --port 8080 --no-browser session.aaf
 
 What the GUI does:
 
-- Two-pane layout. Left pane: AAF Mob list (grouped by class, with name
-  filter) and CFB storage tree. Right pane: type-aware inspector with
-  breadcrumb navigation.
+- **Tracks** is the default landing tab — a post-production-sound-operator
+  view of the file. Three columns: ordered list of audio + video tracks
+  on the topmost CompositionMob (left); clips on the selected track,
+  each labeled with its recovered recorder/mic identity from the chain
+  walk (center); shared inspector with operator-summary header on top
+  of the existing object dump (right). Each clip row shows timeline
+  position, length, the source MasterMob, and — when present — the
+  named recorder SourceMob (e.g. `PW_310_ISO1_B`). Clip rows expand to
+  reveal the underlying AAF object structure.
+- **All Mobs** and **CFB** tabs sit alongside Tracks for the geek-view
+  paths shipped through Phase 5: a flat Mob list grouped by class with
+  name filter (All Mobs), and the raw CFB storage tree (CFB). The
+  inspector is shared across all three views — selecting something in
+  Tracks and switching to All Mobs leaves the inspector showing what
+  you last clicked.
 - Click a MobID badge anywhere in the inspector to jump to that Mob in
   the list (works across StrongRefVector members and scalar MobID
   values).
