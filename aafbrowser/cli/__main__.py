@@ -277,12 +277,20 @@ def inspect(
     default="both",
     help="Which layer to search. Default both.",
 )
+@click.option(
+    "--class",
+    "mob_classes",
+    multiple=True,
+    help="Restrict the AAF-layer walk to Mobs of this class "
+         "(e.g. CompositionMob). Repeatable.",
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON one match per line.")
 def find(
     aaf_path: str,
     pattern: str,
     in_scope: str,
     layer: str,
+    mob_classes: tuple,
     as_json: bool,
 ) -> None:
     """Regex search across the AAF object graph and/or CFB tree."""
@@ -293,18 +301,23 @@ def find(
 
     in_names = in_scope in ("names", "both")
     in_values = in_scope in ("values", "both")
+    mob_class_set = set(mob_classes) if mob_classes else None
 
     with _open_readonly(aaf_path) as f:
         matches: list = []
         if layer in ("aaf", "both"):
             matches.extend(
                 resolver_mod.find_in_aaf(
-                    f, regex, in_names=in_names, in_values=in_values
+                    f, regex,
+                    in_names=in_names, in_values=in_values,
+                    mob_class=mob_class_set,
                 )
             )
         if layer in ("cfb", "both"):
             # CFB doesn't distinguish names/values the same way; the regex
-            # is applied to entry names and class_ids.
+            # is applied to entry names and class_ids. The --class filter
+            # is AAF-layer only, since CFB storages aren't grouped by Mob
+            # class.
             matches.extend(resolver_mod.find_in_cfb(f, regex))
 
         if as_json:

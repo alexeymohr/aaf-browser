@@ -210,3 +210,46 @@ def test_walk_max_hops_truncates(chain_aaf):
     assert res.exit_code == 0
     j = json.loads(res.output)
     assert j["hops"][-1]["terminal_reason"] == "max_hops_reached"
+
+
+# --- find --class ---
+
+
+def test_find_class_filter_excludes_other_classes(chain_aaf):
+    res = _run(
+        "find", str(chain_aaf),
+        "--pattern", "MstHostA",
+        "--class", "SourceMob",
+        "--layer", "aaf",
+    )
+    assert res.exit_code == 0
+    assert "no matches" in res.output
+
+
+def test_find_class_filter_includes_match(chain_aaf):
+    res = _run(
+        "find", str(chain_aaf),
+        "--pattern", "PW_213_HOSTA",
+        "--class", "CompositionMob",
+        "--layer", "aaf",
+    )
+    assert res.exit_code == 0
+    assert "PW_213_HOSTA" in res.output
+
+
+def test_find_class_filter_repeatable(chain_aaf):
+    res = _run(
+        "find", str(chain_aaf),
+        "--pattern", "(?i)host",
+        "--class", "CompositionMob",
+        "--class", "MasterMob",
+        "--layer", "aaf",
+        "--json",
+    )
+    assert res.exit_code == 0
+    classnames = {
+        json.loads(line)["classname"]
+        for line in res.output.strip().splitlines()
+        if line
+    }
+    assert "SourceMob" not in classnames
