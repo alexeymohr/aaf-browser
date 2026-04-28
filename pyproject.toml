@@ -18,7 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
-mac-build = ["pyinstaller>=6.19,<6.20"]
+mac-build = ["pyinstaller>=6.19,<6.20", "Pillow>=12.0,<13"]
 
 [project.scripts]
 aafbrowser = "aafbrowser.cli.__main__:cli"
