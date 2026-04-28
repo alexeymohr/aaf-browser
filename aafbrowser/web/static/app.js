@@ -1755,6 +1755,24 @@ function renderTrackList() {
   summary.textContent =
     `${tracks.length} track${tracks.length === 1 ? "" : "s"} — ${compName}`;
 
+  // Compute Pro Tools-style positional labels (A1, A2, ... / V1, V2, ...)
+  // by walking the track list in display order. Per-kind index, not
+  // tied to slot_id or PhysicalTrackNumber. Stored on the track for
+  // reuse by trackContextLabel() below.
+  let audioIdx = 0;
+  let videoIdx = 0;
+  for (const t of tracks) {
+    if (t.kind === "audio") {
+      audioIdx++;
+      t._positional = `A${audioIdx}`;
+    } else if (t.kind === "video") {
+      videoIdx++;
+      t._positional = `V${videoIdx}`;
+    } else {
+      t._positional = `slot ${t.slot_id}`;
+    }
+  }
+
   for (const t of tracks) {
     const row = el(
       "div",
@@ -1769,7 +1787,7 @@ function renderTrackList() {
         el("span", { class: "track-kind-tag" }, t.kind),
         (() => {
           const n = el("span", { class: "track-name" + (t.name ? "" : " untitled") },
-            t.name || `slot ${t.slot_id}`);
+            t.name || t._positional);
           return n;
         })(),
         el(
@@ -1786,6 +1804,18 @@ function renderTrackList() {
   }
 }
 
+function trackContextLabel(slotId) {
+  // Used in the center-pane summary and the inspector breadcrumb.
+  // Pattern: "<name> (<positional>, Slot N)" if named, "<positional>
+  // (Slot N)" if unnamed. Pro Tools-style positional is computed in
+  // renderTrackList and cached on the track object.
+  const t = tracksState.tracks.find((x) => x.slot_id === slotId);
+  if (!t) return `Slot ${slotId}`;
+  const pos = t._positional || `slot ${slotId}`;
+  if (t.name) return `${t.name} (${pos}, Slot ${slotId})`;
+  return `${pos} (Slot ${slotId})`;
+}
+
 async function selectTrack(slotId) {
   tracksState.selectedSlotId = slotId;
   // Clear per-track tree state (selection + expansion + caches)
@@ -1798,7 +1828,7 @@ async function selectTrack(slotId) {
   );
   $("#clips-summary").replaceChildren(
     el("span", { class: "spinner" }),
-    document.createTextNode(` Loading clips for slot ${slotId}…`),
+    document.createTextNode(` Loading clips for ${trackContextLabel(slotId)}…`),
   );
   $("#clips-tree").replaceChildren();
   resetTracksInspector();
@@ -1824,12 +1854,13 @@ function renderClipsPane() {
     return;
   }
   const clips = tracksState.clips;
+  const ctx = trackContextLabel(tracksState.selectedSlotId);
   if (clips.length === 0) {
-    summary.textContent = `Slot ${tracksState.selectedSlotId} — no clips.`;
+    summary.textContent = `${ctx} — no clips.`;
     return;
   }
   summary.textContent =
-    `Slot ${tracksState.selectedSlotId} — ${clips.length} clip${clips.length === 1 ? "" : "s"}`;
+    `${ctx} — ${clips.length} clip${clips.length === 1 ? "" : "s"}`;
   for (const clip of clips) {
     root.appendChild(renderTreeNode(buildClipNode(clip)));
   }
@@ -2190,7 +2221,7 @@ function renderClipInspector(clip) {
   $("#breadcrumb").replaceChildren(
     el("span", { class: "muted" }, "track "),
     el("span", { class: "crumb head" },
-      `slot ${tracksState.selectedSlotId} / clip ${clip.index}`),
+      `${trackContextLabel(tracksState.selectedSlotId)} / clip ${clip.index}`),
   );
   $("#inspector").replaceChildren(operatorSummaryFor(clip));
 }
