@@ -740,8 +740,12 @@ body.view-cfb .view-cfb-only { display: flex; }
   word-break: break-word;
   overflow-wrap: anywhere;
 }
-.breadcrumb .crumb { cursor: pointer; }
-.breadcrumb .crumb:hover { color: var(--accent); }
+/* The "head" crumb is the current selection — not a clickable
+   navigation target. Only intermediate crumbs get the pointer +
+   accent-on-hover treatment. */
+.breadcrumb .crumb:not(.head) { cursor: pointer; }
+.breadcrumb .crumb:not(.head):hover { color: var(--accent); }
+.breadcrumb .crumb.head { color: var(--fg); cursor: default; }
 .breadcrumb .sep { color: var(--fg-faint); }
 
 .inspector {
