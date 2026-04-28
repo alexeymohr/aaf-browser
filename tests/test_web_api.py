@@ -287,3 +287,90 @@ def test_cfb_stream_bad_offset_400(client, minimal_aaf):
 def test_cfb_stream_no_file_open(client):
     r = client.get("/api/cfb/stream?path=/x")
     assert r.status_code == 409
+
+
+# --- /find ---
+
+
+def test_find_returns_match_dicts(client, two_mob_aaf):
+    client.post("/api/open", json={"path": str(two_mob_aaf)})
+    r = client.get("/api/find?pattern=Channel_1_Host")
+    assert r.status_code == 200
+    j = r.get_json()
+    assert j["total"] >= 1
+    m = j["matches"][0]
+    assert set(m.keys()) >= {"layer", "path", "classname", "field", "value", "where"}
+
+
+def test_find_layer_cfb_only(client, two_mob_aaf):
+    client.post("/api/open", json={"path": str(two_mob_aaf)})
+    r = client.get("/api/find?pattern=Channel_1_Host&layer=cfb")
+    assert r.status_code == 200
+    assert r.get_json()["total"] == 0
+
+
+def test_find_in_names_only(client, two_mob_aaf):
+    client.post("/api/open", json={"path": str(two_mob_aaf)})
+    r = client.get("/api/find?pattern=(?i)channel&in=names")
+    assert r.status_code == 200
+    assert r.get_json()["total"] == 0  # 'channel' is not in any AAF prop name
+
+
+def test_find_bad_regex_400(client, two_mob_aaf):
+    client.post("/api/open", json={"path": str(two_mob_aaf)})
+    r = client.get("/api/find?pattern=(unbalanced")
+    assert r.status_code == 400
+    assert r.get_json()["error"] == "bad_pattern"
+
+
+def test_find_bad_scope_400(client, two_mob_aaf):
+    client.post("/api/open", json={"path": str(two_mob_aaf)})
+    r = client.get("/api/find?pattern=x&in=hat")
+    assert r.status_code == 400
+
+
+def test_find_no_file_open(client):
+    r = client.get("/api/find?pattern=x")
+    assert r.status_code == 409
+
+
+# --- /resolve ---
+
+
+def test_resolve_mob_id(client, two_mob_aaf):
+    client.post("/api/open", json={"path": str(two_mob_aaf)})
+    mobs = client.get("/api/mobs").get_json()["mobs"]
+    target = mobs[0]
+    r = client.get(f"/api/resolve?ref={target['mob_id']}")
+    assert r.status_code == 200
+    j = r.get_json()
+    assert j["kind"] == "mob"
+    assert j["mob_id_or_path"] == target["mob_id"]
+    assert j["class"] == "MasterMob"
+    assert j["name"] == target["name"]
+
+
+def test_resolve_path_to_segment(client, minimal_aaf):
+    client.post("/api/open", json={"path": str(minimal_aaf)})
+    urn = client.get("/api/mobs").get_json()["mobs"][0]["mob_id"]
+    r = client.get(f"/api/resolve?ref=Mobs/{urn}/Slots/0/Segment")
+    assert r.status_code == 200
+    j = r.get_json()
+    assert j["class"] == "Sequence"
+
+
+def test_resolve_unknown_404(client, minimal_aaf):
+    client.post("/api/open", json={"path": str(minimal_aaf)})
+    r = client.get("/api/resolve?ref=nothing-real")
+    assert r.status_code == 404
+
+
+def test_resolve_missing_arg_400(client, minimal_aaf):
+    client.post("/api/open", json={"path": str(minimal_aaf)})
+    r = client.get("/api/resolve")
+    assert r.status_code == 400
+
+
+def test_resolve_no_file_open(client):
+    r = client.get("/api/resolve?ref=x")
+    assert r.status_code == 409

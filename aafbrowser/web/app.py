@@ -14,7 +14,7 @@ Errors follow the brief's contract:
 from __future__ import annotations
 
 import logging
-import traceback
+import re
 from functools import wraps
 from pathlib import Path
 from typing import Any, Callable
@@ -281,3 +281,99 @@ def _register_routes(app: Flask) -> None:
                 "ascii": ascii_rows,
             }
         )
+
+    @app.get("/api/find")
+    @_require_open
+    def api_find():
+        pattern = request.args.get("pattern")
+        if not pattern:
+            return _err(400, "bad_request", "missing 'pattern'")
+        scope = request.args.get("in", "both")
+        layer = request.args.get("layer", "both")
+        if scope not in ("names", "values", "both"):
+            return _err(400, "bad_request", "in must be names|values|both")
+        if layer not in ("aaf", "cfb", "both"):
+            return _err(400, "bad_request", "layer must be aaf|cfb|both")
+
+        try:
+            regex = re.compile(pattern)
+        except re.error as exc:
+            return _err(400, "bad_pattern", str(exc))
+
+        in_names = scope in ("names", "both")
+        in_values = scope in ("values", "both")
+
+        with state_mod.state_lock():
+            if not state_mod.is_open():
+                return _err(409, "no_file_open")
+            handle = state_mod._state.handle
+            sha = state_mod._state.sha256
+            results: list[dict[str, Any]] = []
+            try:
+                if layer in ("aaf", "both"):
+                    for m in resolver_mod.find_in_aaf(
+                        handle, regex, in_names=in_names, in_values=in_values
+                    ):
+                        results.append(_match_to_dict(m))
+                if layer in ("cfb", "both"):
+                    for m in resolver_mod.find_in_cfb(handle, regex):
+                        results.append(_match_to_dict(m))
+            except Exception as exc:
+                return _internal(exc)
+
+        return jsonify({"sha256": sha, "matches": results, "total": len(results)})
+
+    @app.get("/api/resolve")
+    @_require_open
+    def api_resolve():
+        ref = request.args.get("ref")
+        if not ref:
+            return _err(400, "bad_request", "missing 'ref'")
+        with state_mod.state_lock():
+            if not state_mod.is_open():
+                return _err(409, "no_file_open")
+            handle = state_mod._state.handle
+            sha = state_mod._state.sha256
+            try:
+                target = resolver_mod.resolve_mob(handle, ref)
+                if target is not None:
+                    return jsonify(
+                        {
+                            "sha256": sha,
+                            "kind": "mob",
+                            "mob_id_or_path": str(target.mob_id),
+                            "class": type(target).__name__,
+                            "name": getattr(target, "name", None)
+                            if isinstance(getattr(target, "name", None), str)
+                            else None,
+                        }
+                    )
+                # Fall through: try as a path
+                try:
+                    target = resolver_mod.resolve_path(handle, ref)
+                except ValueError as exc:
+                    return _err(404, "not_found", str(exc))
+                nm = getattr(target, "name", None)
+                mob_id = getattr(target, "mob_id", None)
+                return jsonify(
+                    {
+                        "sha256": sha,
+                        "kind": "mob" if mob_id is not None else "path",
+                        "mob_id_or_path": str(mob_id) if mob_id is not None else ref,
+                        "class": type(target).__name__,
+                        "name": nm if isinstance(nm, str) else None,
+                    }
+                )
+            except Exception as exc:
+                return _internal(exc)
+
+
+def _match_to_dict(m) -> dict[str, Any]:
+    return {
+        "layer": m.layer,
+        "path": m.path,
+        "classname": m.classname,
+        "field": m.field,
+        "value": m.value,
+        "where": m.where,
+    }
