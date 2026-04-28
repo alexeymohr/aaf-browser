@@ -21,6 +21,7 @@ import click
 
 from aafbrowser.core import aaf as aaf_walker
 from aafbrowser.core import cfb as cfb_walker
+from aafbrowser.core import chain as chain_mod
 from aafbrowser.core import resolver as resolver_mod
 from aafbrowser.core.serialize import DEFAULT_BYTES_PREVIEW_LIMIT
 
@@ -331,6 +332,77 @@ def find(
             line = f"[{m.layer}/{m.where}] {m.path}  ({m.classname}.{m.field})"
             if m.value:
                 line += f"  = {m.value}"
+            click.echo(line)
+
+
+@cli.command()
+@click.argument("aaf_path", type=click.Path(exists=True, dir_okay=False, readable=True))
+@click.option("--mob-id", "mob_id", default=None, help="MobID URN/dotted/plain hex.")
+@click.option("--path", "path", default=None,
+              help="Slash-separated property path (start at f.content).")
+@click.option("--slot", "slot_id", type=int, default=None,
+              help="Slot ID to enter when starting at a Mob (defaults to first slot).")
+@click.option("--max-hops", type=int, default=64, show_default=True)
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON.")
+def walk(
+    aaf_path: str,
+    mob_id: Optional[str],
+    path: Optional[str],
+    slot_id: Optional[int],
+    max_hops: int,
+    as_json: bool,
+) -> None:
+    """Walk the SourceClip chain hop-by-hop from a Mob or property path."""
+    if not mob_id and not path:
+        raise click.UsageError("Provide --mob-id or --path.")
+    if mob_id and path:
+        raise click.UsageError("Provide --mob-id OR --path, not both.")
+
+    sha = _file_sha256(aaf_path)
+    with _open_readonly(aaf_path) as f:
+        if mob_id:
+            target = resolver_mod.resolve_mob(f, mob_id)
+            if target is None:
+                raise click.ClickException(f"mob not found: {mob_id!r}")
+            start = target
+        else:
+            try:
+                start = resolver_mod.resolve_path(f, path)
+            except ValueError as exc:
+                raise click.ClickException(str(exc)) from exc
+
+        try:
+            hops = chain_mod.walk_chain(f, start, slot_id=slot_id, max_hops=max_hops)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+
+        if as_json:
+            payload = {
+                "file": str(Path(aaf_path).resolve()),
+                "sha256": sha,
+                "start": {
+                    "class": type(start).__name__,
+                    "name": getattr(start, "name", None) if isinstance(getattr(start, "name", None), str) else None,
+                    "mob_id": str(getattr(start, "mob_id", "")) or None,
+                    "slot_id": slot_id,
+                },
+                "hops": [h.to_dict() for h in hops],
+            }
+            click.echo(json.dumps(payload, indent=2, ensure_ascii=False))
+            return
+
+        # Human form
+        for i, h in enumerate(hops):
+            marker = "*" if h.terminal else " "
+            ptn = f" ptn={h.physical_track_number}" if h.physical_track_number is not None else ""
+            edit = f" edit={h.edit_rate}" if h.edit_rate else ""
+            name = f" {h.mob_name!r}" if h.mob_name else ""
+            line = (
+                f"{marker} [{i}] {h.mob_class}{name} slot={h.slot_id} "
+                f"segment={h.segment_class}{ptn}{edit}"
+            )
+            if h.terminal and h.terminal_reason:
+                line += f"  -- terminal: {h.terminal_reason}"
             click.echo(line)
 
 

@@ -6,7 +6,7 @@ import json
 import aaf2
 from click.testing import CliRunner
 
-from aafbrowser.cli.__main__ import cli
+from aafbrowser.cli.__main__ import cli  # noqa: F401
 
 
 def _run(*args):
@@ -158,3 +158,55 @@ def test_find_json_output_lines_are_json(two_mob_aaf):
         obj = json.loads(line)
         assert obj["layer"] in ("aaf", "cfb")
         assert "path" in obj
+
+
+# --- walk subcommand ---
+
+
+def _comp_mob_urn(aaf_path: str) -> str:
+    with aaf2.open(str(aaf_path), "r") as f:
+        for m in f.content.mobs:
+            if type(m).__name__ == "CompositionMob":
+                return str(m.mob_id)
+    raise AssertionError("no CompositionMob")
+
+
+def test_walk_human_output(chain_aaf):
+    urn = _comp_mob_urn(chain_aaf)
+    res = _run("walk", str(chain_aaf), "--mob-id", urn)
+    assert res.exit_code == 0, res.output
+    assert "CompositionMob" in res.output
+    assert "MasterMob" in res.output
+    assert "SourceMob" in res.output
+    assert "terminal: essence" in res.output
+
+
+def test_walk_json_output(chain_aaf):
+    urn = _comp_mob_urn(chain_aaf)
+    res = _run("walk", str(chain_aaf), "--mob-id", urn, "--json")
+    assert res.exit_code == 0
+    j = json.loads(res.output)
+    assert j["start"]["class"] == "CompositionMob"
+    assert len(j["hops"]) == 3
+    assert j["hops"][-1]["terminal"] is True
+    assert j["hops"][-1]["terminal_reason"] == "essence"
+
+
+def test_walk_unknown_mob_id_errors(chain_aaf):
+    res = _run("walk", str(chain_aaf), "--mob-id", "definitely-not-a-mob")
+    assert res.exit_code != 0
+    assert "not found" in res.output.lower()
+
+
+def test_walk_requires_one_of_mob_id_or_path(chain_aaf):
+    res = _run("walk", str(chain_aaf))
+    assert res.exit_code != 0
+    assert "Provide" in res.output
+
+
+def test_walk_max_hops_truncates(chain_aaf):
+    urn = _comp_mob_urn(chain_aaf)
+    res = _run("walk", str(chain_aaf), "--mob-id", urn, "--max-hops", "1", "--json")
+    assert res.exit_code == 0
+    j = json.loads(res.output)
+    assert j["hops"][-1]["terminal_reason"] == "max_hops_reached"
