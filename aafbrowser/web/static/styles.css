@@ -109,6 +109,20 @@ input[type="text"]:focus, input[type="number"]:focus, select:focus {
 }
 #topbar .find-box input[type="text"] { width: 220px; font-family: var(--mono); }
 
+#topbar .quit-link {
+  margin-left: 8px;
+  font-size: 11px;
+  color: var(--fg-faint);
+  text-decoration: none;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+#topbar .quit-link:hover {
+  color: var(--error);
+  background: var(--bg-elev-2);
+}
+
 #topbar .class-filter {
   position: relative;
 }

@@ -14,13 +14,16 @@ Errors follow the brief's contract:
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import subprocess
 import sys
+import threading
 from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, Optional
+from urllib.parse import urlparse
 
 from flask import Flask, jsonify, request
 
@@ -133,6 +136,42 @@ def _macos_choose_file(prompt: str = "Open AAF file") -> Optional[str]:
     )
 
 
+def _shutdown_after(delay_seconds: float = 0.1) -> None:
+    """
+    Schedule a process exit on a timer so the calling /api/quit
+    response can flush to the browser before the server dies. Closes
+    the open AAF file under the state lock first.
+
+    Module-level so tests can monkeypatch it without juggling threads.
+    """
+    def _do_shutdown():
+        try:
+            with state_mod.state_lock():
+                state_mod.close_file()
+        except Exception:
+            pass
+        os._exit(0)
+
+    threading.Timer(delay_seconds, _do_shutdown).start()
+
+
+def _is_same_origin(req: Any) -> bool:
+    """
+    True if the request's Origin header (browser-set) matches the
+    server's own host:port, OR if no Origin is present (CLI tools and
+    tests don't set one and we trust them).
+
+    Browsers set Origin on POST. A malicious cross-origin page cannot
+    spoof Origin, so this reliably blocks the "stray fetch from
+    external.com" CSRF case for the /api/quit endpoint.
+    """
+    origin = req.headers.get("Origin", "")
+    if not origin:
+        return True
+    parsed = urlparse(origin)
+    return parsed.netloc == req.host
+
+
 def _format_hex_ascii(data: bytes, width: int = 16) -> tuple[list[str], list[str]]:
     """Two parallel lists: hex rows and ASCII rows. ASCII uses '.' for non-print."""
     hex_rows: list[str] = []
@@ -217,6 +256,25 @@ def _register_routes(app: Flask) -> None:
     def api_close():
         with state_mod.state_lock():
             state_mod.close_file()
+        return jsonify({"ok": True})
+
+    @app.post("/api/quit")
+    def api_quit():
+        """
+        Shut the server down cleanly. Used by the topbar Quit link and
+        the browser's beforeunload sendBeacon (so closing the tab
+        kills the server, which is the actual common case for a
+        single-user local app).
+
+        Same-origin guarded: only honors requests from our own page,
+        not stray cross-origin fetches.
+        """
+        if not _is_same_origin(request):
+            return _err(403, "forbidden", "cross-origin quit blocked")
+        # Schedule the actual exit on a timer so the response flushes
+        # before the process dies. Module-level helper makes it easy to
+        # monkeypatch in tests.
+        _shutdown_after()
         return jsonify({"ok": True})
 
     @app.get("/api/file")

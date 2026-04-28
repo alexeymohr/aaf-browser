@@ -222,6 +222,26 @@ async function handleOpenClick() {
 
 function wireTopbar() {
   $("#btn-open").addEventListener("click", handleOpenClick);
+  $("#btn-quit").addEventListener("click", async (ev) => {
+    ev.preventDefault();
+    try {
+      await fetch("/api/quit", { method: "POST" });
+    } catch (_) {
+      // Server may already be gone by the time the response would
+      // arrive — that's fine, that's exactly what we wanted.
+    }
+    // Replace the page with a "stopped" message so it's clear the
+    // tab is no longer interactive.
+    document.body.replaceChildren(
+      el("p", { style: "padding:24px; font-family:var(--mono); color:var(--fg-muted);" },
+        "aafbrowser stopped. You can close this tab.")
+    );
+  });
+  // Closing the tab also kills the server. sendBeacon survives the
+  // page-unload race that fetch() loses to.
+  window.addEventListener("beforeunload", () => {
+    try { navigator.sendBeacon("/api/quit"); } catch (_) {}
+  });
   $("#btn-close").addEventListener("click", async () => {
     try {
       await api.close();

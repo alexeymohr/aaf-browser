@@ -94,6 +94,48 @@ def test_pick_file_500_when_osascript_missing(client, monkeypatch):
     assert "osascript" in (r.get_json().get("detail") or "")
 
 
+# --- /api/quit ---
+
+
+def test_quit_schedules_shutdown_and_returns_ok(client, monkeypatch):
+    called = []
+    monkeypatch.setattr(app_mod, "_shutdown_after",
+                        lambda *a, **kw: called.append(("shutdown", a, kw)))
+    r = client.post("/api/quit")
+    assert r.status_code == 200
+    assert r.get_json() == {"ok": True}
+    assert called and called[0][0] == "shutdown"
+
+
+def test_quit_blocks_cross_origin(client, monkeypatch):
+    called = []
+    monkeypatch.setattr(app_mod, "_shutdown_after",
+                        lambda *a, **kw: called.append("shutdown"))
+    r = client.post("/api/quit", headers={"Origin": "http://evil.example"})
+    assert r.status_code == 403
+    assert called == []
+
+
+def test_quit_allows_matching_origin(client, monkeypatch):
+    called = []
+    monkeypatch.setattr(app_mod, "_shutdown_after",
+                        lambda *a, **kw: called.append("shutdown"))
+    # Flask test_client uses host "localhost" by default.
+    r = client.post("/api/quit", headers={"Origin": "http://localhost"})
+    assert r.status_code == 200
+    assert called == ["shutdown"]
+
+
+def test_quit_allows_no_origin_header(client, monkeypatch):
+    """CLI tools and tests don't set Origin; we trust them."""
+    called = []
+    monkeypatch.setattr(app_mod, "_shutdown_after",
+                        lambda *a, **kw: called.append("shutdown"))
+    r = client.post("/api/quit")
+    assert r.status_code == 200
+    assert called == ["shutdown"]
+
+
 def test_open_returns_metadata(client, two_mob_aaf):
     r = client.post("/api/open", json={"path": str(two_mob_aaf)})
     assert r.status_code == 200, r.get_data(as_text=True)
