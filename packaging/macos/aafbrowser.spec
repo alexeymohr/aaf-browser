@@ -18,7 +18,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 # SPECPATH = directory of this spec file. Repo root is two levels up.
 REPO_ROOT = Path(SPECPATH).parent.parent
@@ -33,6 +33,24 @@ with open(REPO_ROOT / "pyproject.toml", "rb") as _pp:
 # bundle and the app crashes on first read of a real AAF.
 HIDDEN_IMPORTS = collect_submodules("aaf2")
 
+# pywebview's macOS backend lazy-imports webview.platforms.cocoa
+# at start time; PyInstaller's static analyzer doesn't see it.
+# collect_submodules pulls in the platforms.* dispatch table.
+HIDDEN_IMPORTS += collect_submodules("webview")
+
+# pyobjc binds the AppKit / WebKit frameworks via a constellation of
+# small modules that are imported by name as strings. collect_submodules
+# rolls them in.
+HIDDEN_IMPORTS += collect_submodules("objc")
+HIDDEN_IMPORTS += collect_submodules("Foundation")
+HIDDEN_IMPORTS += collect_submodules("AppKit")
+HIDDEN_IMPORTS += collect_submodules("WebKit")
+
+# pywebview ships a few JS files (api wiring) it loads from disk at
+# runtime; without collect_data_files the bundle doesn't have them
+# and the JS bridge silently fails.
+WEBVIEW_DATAS = collect_data_files("webview")
+
 ICON_PATH = REPO_ROOT / "packaging" / "macos" / "icon.icns"
 ICON_KW = {"icon": str(ICON_PATH)} if ICON_PATH.is_file() else {}
 
@@ -41,7 +59,7 @@ a = Analysis(
     [ENTRY],
     pathex=[str(REPO_ROOT)],
     binaries=[],
-    datas=[(STATIC_DIR, "aafbrowser/web/static")],
+    datas=[(STATIC_DIR, "aafbrowser/web/static")] + WEBVIEW_DATAS,
     hiddenimports=HIDDEN_IMPORTS,
     hookspath=[],
     hooksconfig={},

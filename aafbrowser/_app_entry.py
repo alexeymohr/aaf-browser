@@ -103,7 +103,6 @@ def _run_with_webview(webview, url: str) -> None:
 
 def _run_with_browser(url: str, server_thread: threading.Thread) -> None:
     """Fallback: open the user's default browser, block on the server."""
-    print(f"aafbrowser running on {url}", file=sys.stderr)
     print("Press Ctrl-C or close the browser tab to stop.", file=sys.stderr)
     try:
         webbrowser.open(url)
@@ -136,6 +135,12 @@ def main(argv: list[str] | None = None) -> int:
 
     url = f"http://127.0.0.1:{port}/"
     webview = _try_import_webview()
+
+    # Always log the URL so it's discoverable in Console.app when
+    # running as a bundled .app — useful for debugging without
+    # attaching a terminal.
+    mode = "WKWebView" if webview is not None else "browser"
+    print(f"aafbrowser running on {url} ({mode} mode)", file=sys.stderr)
 
     try:
         if webview is not None:
