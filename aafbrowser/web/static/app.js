@@ -86,6 +86,22 @@ const api = {
     if (!r.ok) throw await apiError(r);
     return r.json();
   },
+  async cfbTree({ includeMetadict }) {
+    const qs = includeMetadict ? "?include_metadict=1" : "";
+    const r = await fetch("/api/cfb/tree" + qs);
+    if (!r.ok) throw await apiError(r);
+    return r.json();
+  },
+  async cfbStream({ path, offset = 0, length = 4096 }) {
+    const qs = new URLSearchParams({
+      path,
+      offset: String(offset),
+      length: String(length),
+    });
+    const r = await fetch("/api/cfb/stream?" + qs.toString());
+    if (!r.ok) throw await apiError(r);
+    return r.json();
+  },
 };
 
 async function apiError(r) {
@@ -137,8 +153,18 @@ function wireTopbar() {
     state.file = null;
     state.mobs = [];
     state.selected = null;
+    cfbState.tree = null;
+    cfbState.selectedPath = null;
+    cfbState.expanded = new Set();
+    inspectorState.trail = [];
+    inspectorState.current = null;
     setFileStatus();
     renderMobList();
+    $("#cfb-tree").replaceChildren();
+    $("#inspector").replaceChildren(
+      el("p", { class: "muted" }, "Open a file, then select a Mob to inspect it.")
+    );
+    $("#breadcrumb").replaceChildren();
   });
 
   $("#open-form").addEventListener("submit", async (ev) => {
@@ -160,6 +186,11 @@ function wireTopbar() {
       const meta = await api.open(path);
       state.file = meta;
       state.selected = null;
+      cfbState.tree = null;
+      cfbState.selectedPath = null;
+      cfbState.expanded = new Set();
+      inspectorState.trail = [];
+      inspectorState.current = null;
       setFileStatus();
       $("#open-dialog").close();
       const mobs = await api.mobs();
@@ -182,7 +213,15 @@ function wireTabs() {
       $$(".tab-pane").forEach((p) =>
         p.classList.toggle("active", p.dataset.pane === which)
       );
+      if (which === "cfb") loadCfbTreeIfNeeded();
     });
+  });
+}
+
+function wireCfbControls() {
+  $("#cfb-include-metadict").addEventListener("change", () => {
+    cfbState.tree = null; // force reload
+    loadCfbTreeIfNeeded(true);
   });
 }
 
@@ -262,6 +301,240 @@ function renderMobList() {
     }
     root.appendChild(frag);
   }
+}
+
+// ---------- CFB tab ----------
+
+const cfbState = {
+  tree: null,             // last loaded tree
+  selectedPath: null,     // path of currently selected entry
+  expanded: new Set(),    // set of paths whose storages are expanded
+};
+
+async function loadCfbTreeIfNeeded(force = false) {
+  if (!state.file) {
+    $("#cfb-tree").replaceChildren(
+      el("p", { class: "muted", style: "padding:14px;" }, "No file open.")
+    );
+    return;
+  }
+  if (cfbState.tree && !force) return;
+  $("#cfb-tree").replaceChildren(
+    el("p", { class: "muted", style: "padding:14px;" }, "Loading CFB tree…")
+  );
+  try {
+    const includeMetadict = $("#cfb-include-metadict").checked;
+    const env = await api.cfbTree({ includeMetadict });
+    cfbState.tree = env.tree;
+    cfbState.expanded = new Set(["/"]); // root is open by default
+    renderCfbTree();
+  } catch (e) {
+    $("#cfb-tree").replaceChildren(
+      el("p", { class: "error", style: "padding:14px;" },
+        "Error: " + (e.message || String(e)))
+    );
+  }
+}
+
+function renderCfbTree() {
+  const root = $("#cfb-tree");
+  root.replaceChildren();
+  if (!cfbState.tree) return;
+  root.appendChild(renderCfbNode(cfbState.tree, 0));
+}
+
+function renderCfbNode(node, depth) {
+  // Two special placeholder shapes from core.cfb_tree:
+  //   {_type: "cfb_metadict_filtered", ...}
+  //   {_type: "cfb_run_collapsed", ...}
+  const host = el("div", { class: "cfb-node" });
+
+  if (node._type === "cfb_metadict_filtered") {
+    host.appendChild(
+      el("div", { class: "cfb-row" }, [
+        el("span", { class: "twisty" }, ""),
+        el("span", { class: "icon" }, "🗀"),
+        el("span", { class: "cfb-name" }, "MetaDictionary-1/"),
+        el("span", { class: "meta" },
+          ` filtered: ${node.storage_count} storages, ${node.stream_count} streams`),
+      ])
+    );
+    return host;
+  }
+  if (node._type === "cfb_run_collapsed") {
+    host.appendChild(
+      el("div", { class: "cfb-row" }, [
+        el("span", { class: "twisty" }, ""),
+        el("span", { class: "icon" }, "≡"),
+        el("span", { class: "cfb-name" },
+          `${node.first_name} … ${node.last_name}`),
+        el("span", { class: "meta" },
+          ` ×${node.count}, ${node.byte_size} bytes each`),
+      ])
+    );
+    return host;
+  }
+
+  // Normal storage node.
+  const isOpen = cfbState.expanded.has(node.path);
+  const row = el("div", {
+    class: "cfb-row" + (cfbState.selectedPath === node.path ? " selected" : ""),
+    onclick: () => {
+      const wasOpen = cfbState.expanded.has(node.path);
+      if (wasOpen) cfbState.expanded.delete(node.path);
+      else cfbState.expanded.add(node.path);
+      cfbState.selectedPath = node.path;
+      renderCfbTree();
+      showCfbStorageDetail(node);
+    },
+  }, [
+    el("span", { class: "twisty " + (isOpen ? "expanded" : "collapsed") },
+      isOpen ? "▼" : "▶"),
+    el("span", { class: "icon" }, "🗀"),
+    el("span", { class: "cfb-name" },
+      depth === 0 ? "/" : (node.name + "/")),
+    node.class_name
+      ? el("span", { class: "class-name meta" },
+          " [" + node.class_name + "]")
+      : (node.class_id
+          ? el("span", { class: "meta" }, " [unknown class]")
+          : null),
+  ].filter(Boolean));
+  host.appendChild(row);
+
+  if (isOpen) {
+    const children = el("div", { class: "cfb-children" });
+    for (const sub of node.storages || []) {
+      children.appendChild(renderCfbNode(sub, depth + 1));
+    }
+    for (const st of node.streams || []) {
+      children.appendChild(renderCfbStreamRow(st));
+    }
+    host.appendChild(children);
+  }
+  return host;
+}
+
+function renderCfbStreamRow(st) {
+  if (st._type === "cfb_run_collapsed") {
+    return renderCfbNode(st, 0);
+  }
+  const row = el("div", {
+    class: "cfb-row" + (cfbState.selectedPath === st.path ? " selected" : ""),
+    onclick: () => {
+      cfbState.selectedPath = st.path;
+      renderCfbTree();
+      showCfbStreamHexView(st);
+    },
+  }, [
+    el("span", { class: "twisty" }, ""),
+    el("span", { class: "icon" }, "📄"),
+    el("span", { class: "cfb-name" }, st.name),
+    el("span", { class: "meta" }, ` (${st.byte_size} bytes)`),
+    st.class_name
+      ? el("span", { class: "class-name meta" }, " [" + st.class_name + "]")
+      : null,
+  ].filter(Boolean));
+  return row;
+}
+
+function showCfbStorageDetail(node) {
+  // Inspector pane shows DirEntry-level info for a storage.
+  const inspector = $("#inspector");
+  inspector.replaceChildren();
+  $("#breadcrumb").replaceChildren(
+    el("span", { class: "muted" }, "cfb storage "),
+    el("span", { class: "crumb head" }, node.path),
+  );
+  inspector.appendChild(
+    el("div", { class: "obj-header" }, [
+      el("span", { class: "class-tag" }, node.class_name || "Storage"),
+      el("span", { class: "obj-name" }, node.path),
+      node.class_id
+        ? el("span", { class: "obj-mob-id", title: node.class_id },
+            node.class_id)
+        : null,
+    ].filter(Boolean))
+  );
+  const tbl = el("div", { class: "props-table" });
+  const rows = [
+    ["path", node.path],
+    ["name", node.name],
+    ["class_id", node.class_id || ""],
+    ["class_name", node.class_name || ""],
+    ["storages", String((node.storages || []).length)],
+    ["streams", String((node.streams || []).length)],
+  ];
+  for (const [k, v] of rows) {
+    tbl.appendChild(el("div", { class: "prop-name" }, k));
+    tbl.appendChild(el("span", { class: "prop-type" }, "cfb"));
+    const vc = el("div", { class: "prop-value scalar" });
+    vc.textContent = v;
+    tbl.appendChild(vc);
+  }
+  inspector.appendChild(tbl);
+}
+
+async function showCfbStreamHexView(st) {
+  const inspector = $("#inspector");
+  $("#breadcrumb").replaceChildren(
+    el("span", { class: "muted" }, "cfb stream "),
+    el("span", { class: "crumb head" }, st.path),
+  );
+  inspector.replaceChildren();
+  inspector.appendChild(
+    el("div", { class: "obj-header" }, [
+      el("span", { class: "class-tag" }, "Stream"),
+      el("span", { class: "obj-name" }, st.path),
+      el("span", { class: "obj-mob-id", title: String(st.byte_size)},
+        `${st.byte_size} bytes`),
+    ])
+  );
+  const offsetIn = el("input", {
+    type: "number", min: "0", value: "0",
+    style: "width:120px;",
+  });
+  const lengthIn = el("input", {
+    type: "number", min: "0", value: "4096",
+    style: "width:120px;",
+  });
+  const refresh = el("button", { type: "button" }, "Refresh");
+  const controls = el("div", { class: "bytes-controls" }, [
+    el("label", { class: "muted" }, "offset "), offsetIn,
+    el("label", { class: "muted" }, "length "), lengthIn,
+    refresh,
+  ]);
+  inspector.appendChild(controls);
+
+  const hexHost = el("pre", { class: "hex-view" });
+  inspector.appendChild(hexHost);
+
+  const load = async () => {
+    hexHost.textContent = "Loading…";
+    try {
+      const env = await api.cfbStream({
+        path: st.path,
+        offset: Number(offsetIn.value) || 0,
+        length: Number(lengthIn.value) || 0,
+      });
+      const lines = [];
+      const offset0 = env.offset;
+      env.hex.forEach((row, i) => {
+        const off = offset0 + i * 16;
+        const hex = row.padEnd(16 * 3 - 1, " ");
+        const ascii = env.ascii[i] || "";
+        lines.push(`${off.toString(16).padStart(8, "0")}  ${hex}  |${ascii}|`);
+      });
+      const trunc = env.truncated
+        ? `\n…  truncated; total ${env.byte_size} bytes`
+        : "";
+      hexHost.textContent = lines.join("\n") + trunc;
+    } catch (e) {
+      hexHost.textContent = "Error: " + (e.message || String(e));
+    }
+  };
+  refresh.addEventListener("click", load);
+  load();
 }
 
 // ---------- inspector ----------
@@ -683,6 +956,7 @@ async function init() {
   wireTopbar();
   wireTabs();
   wireFilter();
+  wireCfbControls();
   setFileStatus();
   renderMobList();
 
