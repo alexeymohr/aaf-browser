@@ -82,6 +82,36 @@ def _try_import_webview():
         return None
 
 
+def _make_bridge(webview):
+    """
+    Build the pywebview JS bridge — methods become callable from JS as
+    `window.pywebview.api.<method>()`. We expose a single hook so the
+    frontend can ask for a real native NSOpenPanel instead of the
+    osascript fallback when running in the bundled app.
+    """
+
+    class Bridge:
+        def pick_file(self) -> str | None:
+            """Native NSOpenPanel via pywebview's create_file_dialog.
+
+            Returns the chosen POSIX path or None on cancel — matches
+            the shape of `/api/pick_file`'s JSON response so the
+            frontend treats both paths uniformly.
+            """
+            if not webview.windows:
+                return None
+            result = webview.windows[0].create_file_dialog(
+                webview.OPEN_DIALOG,
+                file_types=("AAF Files (*.aaf)", "All files (*.*)"),
+                allow_multiple=False,
+            )
+            if not result:
+                return None
+            return str(result[0])
+
+    return Bridge()
+
+
 def _run_with_webview(webview, url: str) -> None:
     """Native window mode: pywebview's WKWebView pointed at the local URL.
 
@@ -89,6 +119,10 @@ def _run_with_webview(webview, url: str) -> None:
     the window (red close button or Cmd-Q from the menu bar). When it
     returns we fall through to the finally block in main() which
     shuts the server down and closes any open AAF file.
+
+    The Bridge object is exposed to JS as `window.pywebview.api`; the
+    frontend prefers it over the osascript-based /api/pick_file when
+    available.
     """
     webview.create_window(
         title="AAF Browser",
@@ -97,6 +131,7 @@ def _run_with_webview(webview, url: str) -> None:
         height=800,
         resizable=True,
         text_select=True,
+        js_api=_make_bridge(webview),
     )
     webview.start()
 

@@ -79,8 +79,20 @@ const api = {
     return r.json();
   },
   async pickFile() {
-    // Returns {path: string|null} on 200, throws on 501 / 5xx so the
-    // caller can fall back to the text-paste dialog.
+    // Prefer pywebview's native NSOpenPanel JS bridge when the page
+    // is rendered inside the bundled .app's WKWebView. Falls back to
+    // the osascript-based HTTP endpoint when running in a regular
+    // browser (i.e. via `aafbrowser web` from a pip install).
+    if (
+      window.pywebview &&
+      window.pywebview.api &&
+      typeof window.pywebview.api.pick_file === "function"
+    ) {
+      const path = await window.pywebview.api.pick_file();
+      return { path: path || null };
+    }
+    // HTTP fallback: returns {path: string|null} on 200, throws on
+    // 501 / 5xx so the caller can fall back to the text-paste dialog.
     const r = await fetch("/api/pick_file", { method: "POST" });
     if (r.status === 501) {
       const err = new Error("native picker unavailable");
