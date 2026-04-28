@@ -7,15 +7,20 @@ so PyInstaller's import analysis follows the dependency graph
 naturally; also runnable as `python -m aafbrowser._app_entry [path]`
 during local development.
 
-Behavior:
+Behavior at runtime:
 1. Pick a free ephemeral port on 127.0.0.1.
 2. Start wsgiref in a daemon thread.
-3. Open the user's default browser at the chosen URL.
-4. Block on the server thread; SIGTERM (Cmd-Q from Dock) and SIGINT
-   trigger clean shutdown.
-5. Optional first arg: a path to an AAF file to pre-open (so the
-   browser tab lands on the file already loaded — used when launching
-   from Finder via the .aaf file association declared in Info.plist).
+3. If pywebview is importable, open a native macOS window with
+   WKWebView pointed at the local URL (the bundled .app path).
+   webview.start() blocks until the window closes.
+4. Otherwise (no pywebview installed — typical for `python -m
+   aafbrowser._app_entry` in a dev env), fall back to opening the
+   user's default browser and blocking on the server thread.
+5. SIGTERM and SIGINT both trigger clean shutdown in the
+   browser-fallback path.
+6. Optional first arg: a path to an AAF file to pre-open (so the
+   window lands on the file already loaded — used by .aaf file
+   association declared in Info.plist).
 """
 from __future__ import annotations
 
@@ -56,11 +61,60 @@ def _preopen(path: str) -> None:
 
 def _install_signal_handlers() -> None:
     """SIGTERM should behave like Ctrl-C so the main thread's join()
-    returns and the finally block runs."""
+    returns and the finally block runs (browser-fallback path only)."""
     def _term(_signum, _frame):
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGTERM, _term)
+
+
+def _try_import_webview():
+    """Return the pywebview module if importable, else None.
+
+    Bundle builds always have pywebview; the fallback browser path
+    triggers for `python -m aafbrowser._app_entry` from a dev env
+    that didn't install the mac-build extras.
+    """
+    try:
+        import webview  # type: ignore
+        return webview
+    except Exception:
+        return None
+
+
+def _run_with_webview(webview, url: str) -> None:
+    """Native window mode: pywebview's WKWebView pointed at the local URL.
+
+    `webview.start()` blocks the main thread until the user closes
+    the window (red close button or Cmd-Q from the menu bar). When it
+    returns we fall through to the finally block in main() which
+    shuts the server down and closes any open AAF file.
+    """
+    webview.create_window(
+        title="AAF Browser",
+        url=url,
+        width=1200,
+        height=800,
+        resizable=True,
+        text_select=True,
+    )
+    webview.start()
+
+
+def _run_with_browser(url: str, server_thread: threading.Thread) -> None:
+    """Fallback: open the user's default browser, block on the server."""
+    print(f"aafbrowser running on {url}", file=sys.stderr)
+    print("Press Ctrl-C or close the browser tab to stop.", file=sys.stderr)
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass
+
+    _install_signal_handlers()
+    try:
+        server_thread.join()
+    except KeyboardInterrupt:
+        pass
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -81,19 +135,13 @@ def main(argv: list[str] | None = None) -> int:
     server_thread.start()
 
     url = f"http://127.0.0.1:{port}/"
-    print(f"aafbrowser running on {url}", file=sys.stderr)
-    print("Press Ctrl-C or close the browser tab to stop.", file=sys.stderr)
-    try:
-        webbrowser.open(url)
-    except Exception:
-        pass
-
-    _install_signal_handlers()
+    webview = _try_import_webview()
 
     try:
-        server_thread.join()
-    except KeyboardInterrupt:
-        pass
+        if webview is not None:
+            _run_with_webview(webview, url)
+        else:
+            _run_with_browser(url, server_thread)
     finally:
         try:
             server.shutdown()

@@ -38,3 +38,52 @@ def test_module_is_importable():
     without side effects at module load."""
     assert hasattr(_app_entry, "main")
     assert callable(_app_entry.main)
+
+
+def test_main_uses_webview_when_available(monkeypatch, tmp_path):
+    """When pywebview is importable, main() should dispatch through
+    _run_with_webview rather than the browser fallback."""
+
+    class FakeWebview:
+        pass
+
+    calls = []
+
+    def fake_run_webview(webview, url):
+        calls.append(("webview", url))
+
+    def fake_run_browser(url, thread):
+        calls.append(("browser", url))
+
+    monkeypatch.setattr(_app_entry, "_try_import_webview",
+                        lambda: FakeWebview())
+    monkeypatch.setattr(_app_entry, "_run_with_webview", fake_run_webview)
+    monkeypatch.setattr(_app_entry, "_run_with_browser", fake_run_browser)
+
+    rc = _app_entry.main(["script.py"])
+    assert rc == 0
+    assert len(calls) == 1
+    assert calls[0][0] == "webview"
+    assert calls[0][1].startswith("http://127.0.0.1:")
+
+
+def test_main_falls_back_to_browser_when_webview_missing(monkeypatch):
+    """When pywebview can't be imported, main() should call the
+    browser fallback so dev/CLI environments without the mac-build
+    extras still work."""
+    calls = []
+
+    def fake_run_browser(url, thread):
+        calls.append(("browser", url))
+
+    def fake_run_webview(webview, url):
+        calls.append(("webview", url))
+
+    monkeypatch.setattr(_app_entry, "_try_import_webview", lambda: None)
+    monkeypatch.setattr(_app_entry, "_run_with_browser", fake_run_browser)
+    monkeypatch.setattr(_app_entry, "_run_with_webview", fake_run_webview)
+
+    rc = _app_entry.main(["script.py"])
+    assert rc == 0
+    assert len(calls) == 1
+    assert calls[0][0] == "browser"
