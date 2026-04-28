@@ -35,6 +35,10 @@ html, body {
   line-height: 1.4;
   overflow: hidden;
 }
+body {
+  display: flex;
+  flex-direction: column;
+}
 
 button, input, select {
   font: inherit;
@@ -76,7 +80,7 @@ input[type="text"]:focus, input[type="number"]:focus, select:focus {
   padding: 8px 14px;
   background: var(--bg-elev);
   border-bottom: 1px solid var(--border);
-  height: 44px;
+  flex: 0 0 44px;
 }
 #topbar .brand {
   font-family: var(--mono);
@@ -140,7 +144,7 @@ dialog#open-dialog .error {
 #layout {
   display: grid;
   grid-template-columns: 360px 1fr;
-  height: calc(100% - 44px - 32px); /* topbar + collapsed find panel */
+  flex: 1 1 0;
   min-height: 0;
 }
 
@@ -323,14 +327,19 @@ dialog#open-dialog .error {
 
 .props-table {
   display: grid;
-  grid-template-columns: minmax(160px, max-content) auto 1fr;
+  grid-template-columns: minmax(160px, max-content) auto auto;
   column-gap: 12px;
   row-gap: 4px;
   font-family: var(--mono);
   font-size: 12px;
   align-items: baseline;
+  /* Each nested table sizes to its content width — long values cause the
+     parent inspector to scroll horizontally rather than wrapping each
+     character onto its own line. */
+  width: max-content;
+  min-width: 100%;
 }
-.props-table .prop-name { color: var(--fg); }
+.props-table .prop-name { color: var(--fg); white-space: nowrap; }
 .props-table .prop-type {
   font-size: 10.5px;
   padding: 0 5px;
@@ -342,7 +351,7 @@ dialog#open-dialog .error {
 }
 .props-table .prop-value {
   white-space: pre-wrap;
-  word-break: break-all;
+  overflow-wrap: anywhere;
   color: var(--fg);
 }
 .props-table .prop-value.scalar { color: #c9d1d9; }
@@ -422,13 +431,12 @@ dialog#open-dialog .error {
   background: var(--bg-elev);
   display: flex;
   flex-direction: column;
-  height: 32px;
-  flex: 0 0 auto;
+  flex: 0 0 32px;
   overflow: hidden;
-  transition: height 120ms ease-out;
+  transition: flex-basis 120ms ease-out;
 }
 .find-panel:not(.collapsed) {
-  height: 240px;
+  flex: 0 0 240px;
 }
 .find-panel header {
   display: flex;
