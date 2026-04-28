@@ -9,10 +9,34 @@ by some intermediate tool?"*
 
 See [docs/PROJECT_OVERVIEW.md](docs/PROJECT_OVERVIEW.md) for context, and
 the briefs at [docs/phase1-brief.md](docs/phase1-brief.md) (CLI),
-[docs/phase2-brief.md](docs/phase2-brief.md) (web GUI), and
-[docs/phase3-brief.md](docs/phase3-brief.md) (chain-walk + class-filtered find).
+[docs/phase2-brief.md](docs/phase2-brief.md) (web GUI),
+[docs/phase3-brief.md](docs/phase3-brief.md) (chain-walk + class-filtered find), and
+[docs/phase4-brief.md](docs/phase4-brief.md) (macOS app + native file picker).
 
-## Install
+## Install — macOS app (recommended)
+
+Download the latest `AAF-Browser-vX.Y.Z-arm64.dmg` from the
+[GitHub Releases](https://github.com/alexeymohr/AAF_Browser/releases)
+page, mount it, and drag **AAF Browser** to `/Applications`. Launch
+from Spotlight or the Applications folder. The app starts a local
+server and opens the GUI in your default browser.
+
+Apple Silicon (M1+) only. Files are never modified — the app uses
+the same read-only pyaaf2 path as the CLI.
+
+If macOS shows a Gatekeeper warning on first launch, the .dmg was
+ad-hoc signed (signing secrets weren't configured in the build):
+1. Try to open it once and let macOS block it.
+2. Open **System Settings → Privacy & Security**, scroll to
+   "Security", and click **Open Anyway** next to AAF Browser.
+3. Confirm. Future launches don't ask again.
+
+A signed + notarized .dmg avoids this prompt entirely.
+
+## Install — pip (developers / CLI)
+
+For the command-line tools (`aafbrowser tree`, `dump`, `cfb`,
+`inspect`, `find`, `walk`, `web`):
 
 ```sh
 python -m venv .venv
@@ -142,10 +166,24 @@ What the GUI does:
   collapsible bottom panel; clicking a row navigates to the Mob (AAF
   layer) or expands the CFB ancestors and selects the entry (CFB
   layer).
+- **Open** uses a native macOS file picker (via `osascript`); on other
+  platforms it falls back to a paste-the-path text dialog.
+- **Quit** link in the topbar stops the local server cleanly. Closing
+  the browser tab also stops it (via `navigator.sendBeacon`), so the
+  app doesn't leak server processes.
 
 The GUI is a thin frontend over the same `aafbrowser.core` library the
 CLI uses. Read-only invariants are enforced server-side; pyaaf2 access
 is serialized through a single `threading.Lock`.
+
+### `.aaf` file association (macOS app only)
+
+The bundled .app declares a `.aaf` file association via
+`CFBundleDocumentTypes`. Right-click an .aaf in Finder → **Open With
+→ AAF Browser** preloads the file when the app starts cold. Once the
+app is already running, double-clicking another .aaf in Finder won't
+preload it (would require an in-process AppKit handler not present
+in v1) — use the in-app **Open** button instead.
 
 ### `aafbrowser find <file.aaf> --pattern <regex>`
 

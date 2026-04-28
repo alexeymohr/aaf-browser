@@ -118,12 +118,19 @@ parser is unnecessary and would complicate the read-only guarantee.
 
 | Phase | Scope | Status |
 |---|---|---|
-| 1 | Core library + CLI | In development — see `docs/phase1-brief.md` |
-| 2 | Web GUI on top of the same core | Pending Phase 1 + brief not yet written |
+| 1 | Core library + CLI | Shipped — `docs/phase1-brief.md`, `docs/completion_reports/phase1-completion-report.md` |
+| 2 | Web GUI on top of the same core | Shipped — `docs/phase2-brief.md`, `docs/completion_reports/phase2-completion-report.md` |
+| 3 | Chain-walk + class-filtered find | Shipped — `docs/phase3-brief.md`, `docs/completion_reports/phase3-completion-report.md` |
+| 4 | macOS app distribution + native file picker | Shipped — `docs/phase4-brief.md`, `docs/completion_reports/phase4-completion-report.md` |
 
-Phase 2 brief will be drafted only after Phase 1 has been used in anger to
-investigate at least one real AAF (the Password channel question). Real usage
-will tell us what the GUI actually needs to surface.
+Each phase brief was drafted only after the previous phase had been used in
+anger against at least one real AAF (the Password show is the recurring test
+material). Real usage drives what the next phase prioritizes.
+
+Phase 3 produced `docs/identifying-clip-channels.md` — a self-contained
+explainer for the TrackManager session on how to use the chain-walk to
+identify a clip's true physical microphone channel through the
+SourceClip → MasterMob → SourceMob chain.
 
 ## Read-only as an invariant
 
