@@ -102,6 +102,14 @@ const api = {
     if (!r.ok) throw await apiError(r);
     return r.json();
   },
+  async find({ pattern, scope, layer }) {
+    const qs = new URLSearchParams({
+      pattern, in: scope, layer,
+    });
+    const r = await fetch("/api/find?" + qs.toString());
+    if (!r.ok) throw await apiError(r);
+    return r.json();
+  },
 };
 
 async function apiError(r) {
@@ -950,6 +958,163 @@ function renderValueCell(v) {
   return c;
 }
 
+// ---------- find panel ----------
+
+const findState = {
+  matches: [],
+  pattern: "",
+};
+
+function wireFindPanel() {
+  const panel = $("#find-panel");
+  $("#btn-find-toggle").addEventListener("click", () => {
+    panel.classList.toggle("collapsed");
+  });
+  $("#btn-find").addEventListener("click", runFind);
+  $("#find-pattern").addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      runFind();
+    }
+  });
+}
+
+async function runFind() {
+  if (!state.file) return;
+  const pattern = $("#find-pattern").value.trim();
+  if (!pattern) return;
+  const scope = $("#find-scope").value;
+  const layer = $("#find-layer").value;
+  const panel = $("#find-panel");
+  panel.classList.remove("collapsed");
+  const summary = $("#find-summary");
+  summary.textContent = `Searching "${pattern}" …`;
+  summary.classList.add("muted");
+  const host = $("#find-results");
+  host.replaceChildren();
+  try {
+    const env = await api.find({ pattern, scope, layer });
+    findState.matches = env.matches;
+    findState.pattern = pattern;
+    summary.textContent =
+      env.total === 0
+        ? `No matches for "${pattern}".`
+        : `${env.total} match${env.total === 1 ? "" : "es"} for "${pattern}"`;
+    renderFindResults(env.matches);
+  } catch (e) {
+    summary.textContent = "Error: " + (e.message || String(e));
+  }
+}
+
+function renderFindResults(matches) {
+  const host = $("#find-results");
+  host.replaceChildren();
+  if (matches.length === 0) return;
+  for (const m of matches) {
+    host.appendChild(
+      el(
+        "div",
+        {
+          class: "find-row",
+          title: m.path,
+          onclick: () => jumpToMatch(m),
+        },
+        [
+          el("span", { class: "layer-tag" }, `${m.layer}/${m.where}`),
+          el("span", { class: "find-path" },
+            `${m.path}  (${m.classname}.${m.field})`),
+          el("span", { class: "find-value" }, m.value || ""),
+        ]
+      )
+    );
+  }
+}
+
+async function jumpToMatch(m) {
+  if (m.layer === "aaf") {
+    // m.path is a slash-separated property path from f.content. The first
+    // two segments are typically `Mobs/<urn>`. Pull the URN out and
+    // navigate to that Mob; the remaining segments are useful context for
+    // the breadcrumb and we surface them in the trail label.
+    const parts = m.path.split("/").filter(Boolean);
+    if (parts.length >= 2 && parts[0] === "Mobs") {
+      const urn = parts[1];
+      const remaining = parts.slice(2);
+      // Activate AAF tab
+      activateTab("aaf");
+      await navigateToMobId(urn);
+      if (remaining.length) {
+        const trailLabel =
+          inspectorState.trail[0]?.label || `Mob:${tailMobId(urn)}`;
+        // Re-set breadcrumb to include the deeper path as a non-clickable
+        // text trail; future improvement: walk and fetch each level.
+        $("#breadcrumb").replaceChildren(
+          el("span", { class: "crumb head" }, trailLabel),
+          el("span", { class: "sep" }, "/"),
+          el("span", { class: "muted" }, remaining.join("/")),
+        );
+      }
+      return;
+    }
+    // Non-mob AAF path (rare). Resolve directly via /api/object?path=
+    activateTab("aaf");
+    inspectorState.trail = [{
+      label: m.path,
+      fetch: () => api.object({ path: m.path }),
+    }];
+    state.selected = null;
+    $$(".mob-row").forEach((r) => r.classList.remove("selected"));
+    await renderInspectorAt(0);
+    return;
+  }
+  // CFB layer: open the tree if it isn't loaded, expand ancestors, scroll
+  // to the entry, and render its detail.
+  activateTab("cfb");
+  if (!cfbState.tree) await loadCfbTreeIfNeeded(true);
+  // Ensure all ancestor storages are expanded.
+  const segs = m.path.split("/").filter(Boolean);
+  let cur = "/";
+  cfbState.expanded.add(cur);
+  for (const s of segs.slice(0, -1)) {
+    cur = (cur === "/" ? "/" : cur + "/") + s;
+    cfbState.expanded.add(cur);
+  }
+  cfbState.selectedPath = m.path;
+  renderCfbTree();
+  // Show the detail. Streams are leaves, storages may be containers.
+  const found = findCfbEntry(cfbState.tree, m.path);
+  if (found && found.kind === "stream") showCfbStreamHexView(found.entry);
+  else if (found) showCfbStorageDetail(found.entry);
+  // Scroll the matching row into view if it's been rendered.
+  const row = document.querySelector(
+    `.cfb-row.selected`
+  );
+  if (row) row.scrollIntoView({ block: "nearest" });
+}
+
+function findCfbEntry(node, path) {
+  if (!node) return null;
+  if (node.path === path) return { kind: "storage", entry: node };
+  for (const sub of node.storages || []) {
+    const r = findCfbEntry(sub, path);
+    if (r) return r;
+  }
+  for (const st of node.streams || []) {
+    if (st.path === path) return { kind: "stream", entry: st };
+  }
+  return null;
+}
+
+function activateTab(which) {
+  $$(".tabs .tab").forEach((t) =>
+    t.classList.toggle("active", t.dataset.tab === which)
+  );
+  $$(".tab-pane").forEach((p) =>
+    p.classList.toggle("active", p.dataset.pane === which)
+  );
+  if (which === "cfb") loadCfbTreeIfNeeded();
+}
+
 // ---------- bootstrap ----------
 
 async function init() {
@@ -957,6 +1122,7 @@ async function init() {
   wireTabs();
   wireFilter();
   wireCfbControls();
+  wireFindPanel();
   setFileStatus();
   renderMobList();
 
