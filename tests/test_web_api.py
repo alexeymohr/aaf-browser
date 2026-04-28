@@ -374,3 +374,88 @@ def test_resolve_missing_arg_400(client, minimal_aaf):
 def test_resolve_no_file_open(client):
     r = client.get("/api/resolve?ref=x")
     assert r.status_code == 409
+
+
+# --- /api/walk ---
+
+
+def _comp_mob(client):
+    mobs = client.get("/api/mobs?class=CompositionMob").get_json()["mobs"]
+    return mobs[0]
+
+
+def test_walk_returns_full_chain(client, chain_aaf):
+    client.post("/api/open", json={"path": str(chain_aaf)})
+    comp = _comp_mob(client)
+    r = client.get(f"/api/walk?mob_id={comp['mob_id']}")
+    assert r.status_code == 200
+    j = r.get_json()
+    assert j["start"]["class"] == "CompositionMob"
+    assert len(j["hops"]) == 3
+    assert j["hops"][-1]["terminal"] is True
+    assert j["hops"][-1]["terminal_reason"] == "essence"
+
+
+def test_walk_by_path(client, chain_aaf):
+    client.post("/api/open", json={"path": str(chain_aaf)})
+    comp = _comp_mob(client)
+    r = client.get(
+        f"/api/walk?path=Mobs/{comp['mob_id']}/Slots/0/Segment"
+    )
+    assert r.status_code == 200
+    # Path resolves to a SourceClip; walk descends from there into the
+    # MasterMob and SourceMob.
+    j = r.get_json()
+    assert [h["mob_class"] for h in j["hops"]] == ["MasterMob", "SourceMob"]
+
+
+def test_walk_unknown_mob_id_404(client, chain_aaf):
+    client.post("/api/open", json={"path": str(chain_aaf)})
+    r = client.get("/api/walk?mob_id=nope")
+    assert r.status_code == 404
+
+
+def test_walk_missing_args_400(client, chain_aaf):
+    client.post("/api/open", json={"path": str(chain_aaf)})
+    r = client.get("/api/walk")
+    assert r.status_code == 400
+
+
+def test_walk_both_args_400(client, chain_aaf):
+    client.post("/api/open", json={"path": str(chain_aaf)})
+    r = client.get("/api/walk?mob_id=foo&path=bar")
+    assert r.status_code == 400
+
+
+def test_walk_no_file_open(client):
+    r = client.get("/api/walk?mob_id=abc")
+    assert r.status_code == 409
+
+
+def test_walk_max_hops_clipped(client, chain_aaf):
+    client.post("/api/open", json={"path": str(chain_aaf)})
+    comp = _comp_mob(client)
+    r = client.get(f"/api/walk?mob_id={comp['mob_id']}&max_hops=1")
+    j = r.get_json()
+    assert j["hops"][-1]["terminal_reason"] == "max_hops_reached"
+
+
+# --- /api/find?class= ---
+
+
+def test_find_class_filter_excludes(client, chain_aaf):
+    client.post("/api/open", json={"path": str(chain_aaf)})
+    r = client.get("/api/find?pattern=MstHostA&layer=aaf&class=SourceMob")
+    assert r.status_code == 200
+    assert r.get_json()["total"] == 0
+
+
+def test_find_class_filter_repeated(client, chain_aaf):
+    client.post("/api/open", json={"path": str(chain_aaf)})
+    r = client.get(
+        "/api/find?pattern=(?i)host&layer=aaf"
+        "&class=CompositionMob&class=MasterMob"
+    )
+    assert r.status_code == 200
+    classnames = {m["classname"] for m in r.get_json()["matches"]}
+    assert "SourceMob" not in classnames

@@ -23,6 +23,7 @@ from flask import Flask, jsonify, request
 
 from aafbrowser.core import aaf as aaf_walker
 from aafbrowser.core import cfb as cfb_walker
+from aafbrowser.core import chain as chain_mod
 from aafbrowser.core import resolver as resolver_mod
 
 from . import state as state_mod
@@ -294,6 +295,9 @@ def _register_routes(app: Flask) -> None:
             return _err(400, "bad_request", "in must be names|values|both")
         if layer not in ("aaf", "cfb", "both"):
             return _err(400, "bad_request", "layer must be aaf|cfb|both")
+        # Repeated ?class=Foo&class=Bar query params restrict the AAF-layer
+        # walk to those Mob classes. Empty list = no filter.
+        mob_class_set = set(request.args.getlist("class")) or None
 
         try:
             regex = re.compile(pattern)
@@ -312,7 +316,9 @@ def _register_routes(app: Flask) -> None:
             try:
                 if layer in ("aaf", "both"):
                     for m in resolver_mod.find_in_aaf(
-                        handle, regex, in_names=in_names, in_values=in_values
+                        handle, regex,
+                        in_names=in_names, in_values=in_values,
+                        mob_class=mob_class_set,
                     ):
                         results.append(_match_to_dict(m))
                 if layer in ("cfb", "both"):
@@ -366,6 +372,68 @@ def _register_routes(app: Flask) -> None:
                 )
             except Exception as exc:
                 return _internal(exc)
+
+
+    @app.get("/api/walk")
+    @_require_open
+    def api_walk():
+        mob_id = request.args.get("mob_id")
+        path = request.args.get("path")
+        slot_id_raw = request.args.get("slot_id")
+        max_hops_raw = request.args.get("max_hops", "64")
+        if not mob_id and not path:
+            return _err(400, "bad_request", "provide mob_id or path")
+        if mob_id and path:
+            return _err(400, "bad_request", "provide mob_id OR path, not both")
+        try:
+            slot_id = int(slot_id_raw) if slot_id_raw is not None else None
+            max_hops = int(max_hops_raw)
+        except ValueError:
+            return _err(400, "bad_request", "slot_id and max_hops must be integers")
+        if max_hops < 1:
+            return _err(400, "bad_request", "max_hops must be >= 1")
+
+        with state_mod.state_lock():
+            if not state_mod.is_open():
+                return _err(409, "no_file_open")
+            handle = state_mod._state.handle
+            sha = state_mod._state.sha256
+            try:
+                if mob_id:
+                    target = resolver_mod.resolve_mob(handle, mob_id)
+                    if target is None:
+                        return _err(404, "not_found", f"mob_id={mob_id!r}")
+                    start = target
+                else:
+                    try:
+                        start = resolver_mod.resolve_path(handle, path)
+                    except ValueError as exc:
+                        return _err(404, "not_found", str(exc))
+
+                try:
+                    hops = chain_mod.walk_chain(
+                        handle, start, slot_id=slot_id, max_hops=max_hops
+                    )
+                except ValueError as exc:
+                    return _err(404, "not_found", str(exc))
+            except Exception as exc:
+                return _internal(exc)
+
+        start_mob_id = getattr(start, "mob_id", None)
+        return jsonify({
+            "sha256": sha,
+            "start": {
+                "class": type(start).__name__,
+                "name": (
+                    getattr(start, "name", None)
+                    if isinstance(getattr(start, "name", None), str)
+                    else None
+                ),
+                "mob_id": str(start_mob_id) if start_mob_id is not None else None,
+                "slot_id": slot_id,
+            },
+            "hops": [h.to_dict() for h in hops],
+        })
 
 
 def _match_to_dict(m) -> dict[str, Any]:
