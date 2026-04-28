@@ -179,13 +179,22 @@ def find_in_aaf(
     *,
     in_names: bool = True,
     in_values: bool = True,
+    mob_class: Optional[set[str]] = None,
 ) -> Iterator[Match]:
     """
     Yield Match records for every property whose name (if in_names) or
     string-coerced scalar value (if in_values) matches `pattern`. Recurses
     StrongRef* properties; never recurses into WeakRef targets. Cycle-safe.
+
+    `mob_class`, if set, restricts the AAF-layer walk to Mobs whose class
+    name (e.g. "MasterMob", "CompositionMob") is in the set. The filter
+    applies at the top-level Mobs collection only — once we've descended
+    into a matching Mob, the full subtree is searched. This honors how
+    questions are usually phrased ("KEKE under CompositionMobs") without
+    over-restricting nested matches.
     """
     visited: set[int] = set()
+    skip_unmatched_mobs = bool(mob_class)
 
     def walk(obj: Any, path: str) -> Iterator[Match]:
         if id(obj) in visited:
@@ -216,7 +225,18 @@ def find_in_aaf(
                     if v is not None:
                         yield from walk(v, child_path)
                 elif pkind in ("StrongRefVectorProperty", "StrongRefSetProperty"):
+                    # Top-level Mobs collection is the one place we apply
+                    # the mob_class filter. Identified by ContentStorage
+                    # parent + property name "Mobs". Anywhere else
+                    # (StrongRefSet of Slots, etc.) is searched in full.
+                    is_mobs = (
+                        skip_unmatched_mobs
+                        and pname == "Mobs"
+                        and classname == "ContentStorage"
+                    )
                     for i, child in enumerate(prop.value or []):
+                        if is_mobs and type(child).__name__ not in mob_class:
+                            continue
                         yield from walk(child, f"{child_path}/{i}")
                 elif pkind == "WeakRefProperty":
                     target = prop.value

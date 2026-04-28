@@ -121,3 +121,55 @@ def test_find_in_cfb_matches_class_id_substring(minimal_aaf):
     with aaf2.open(str(minimal_aaf), "r") as f:
         matches = list(find_in_cfb(f, re.compile(r"060e-2b34")))
     assert any(m.where == "class_id" for m in matches)
+
+
+# --- mob_class filter on find_in_aaf ---
+
+
+def test_find_in_aaf_mob_class_filter_excludes_non_matches(chain_aaf):
+    with aaf2.open(str(chain_aaf), "r") as f:
+        # "MstHostA" is a MasterMob name. With mob_class={"CompositionMob"}
+        # we should NOT see it (we never descend into the MasterMob).
+        matches = list(
+            find_in_aaf(
+                f, re.compile(r"MstHostA"),
+                mob_class={"CompositionMob"},
+            )
+        )
+    assert matches == []
+
+
+def test_find_in_aaf_mob_class_filter_includes_matches(chain_aaf):
+    with aaf2.open(str(chain_aaf), "r") as f:
+        # "PW_213_HOSTA" is the CompositionMob's name.
+        matches = list(
+            find_in_aaf(
+                f, re.compile(r"PW_213_HOSTA"),
+                mob_class={"CompositionMob"},
+            )
+        )
+    assert any("PW_213_HOSTA" in m.value for m in matches)
+
+
+def test_find_in_aaf_mob_class_filter_supports_multiple_classes(chain_aaf):
+    with aaf2.open(str(chain_aaf), "r") as f:
+        matches = list(
+            find_in_aaf(
+                f, re.compile(r"(?i)host|hosta|src"),
+                mob_class={"CompositionMob", "MasterMob"},
+            )
+        )
+    classnames = {m.classname for m in matches}
+    # SourceMob excluded; only Composition + Master subtrees (and their
+    # nested children — slot/segment classes are not Mobs)
+    assert "SourceMob" not in classnames
+
+
+def test_find_in_aaf_no_filter_matches_all(chain_aaf):
+    """Unfiltered search includes the MasterMob; filtered to SourceMob excludes it."""
+    pattern = re.compile(r"MstHostA")
+    with aaf2.open(str(chain_aaf), "r") as f:
+        unfiltered = list(find_in_aaf(f, pattern))
+        src_only = list(find_in_aaf(f, pattern, mob_class={"SourceMob"}))
+    assert len(unfiltered) >= 1
+    assert src_only == []
