@@ -334,5 +334,59 @@ def find(
             click.echo(line)
 
 
+@cli.command(name="web")
+@click.argument(
+    "aaf_path",
+    type=click.Path(exists=True, dir_okay=False, readable=True),
+    required=False,
+)
+@click.option("--host", default="127.0.0.1", show_default=True)
+@click.option("--port", default=5173, show_default=True, type=int)
+@click.option(
+    "--no-browser",
+    is_flag=True,
+    help="Don't open the URL in the system browser on startup.",
+)
+def web(aaf_path: Optional[str], host: str, port: int, no_browser: bool) -> None:
+    """Start the local web GUI. Optionally open AAF_PATH at launch."""
+    import webbrowser
+    from wsgiref.simple_server import make_server
+
+    from aafbrowser.web import state as state_mod
+    from aafbrowser.web.app import create_app
+
+    if aaf_path:
+        try:
+            with state_mod.state_lock():
+                state_mod.open_file(aaf_path)
+        except Exception as exc:
+            raise click.ClickException(f"failed to open {aaf_path!r}: {exc}") from exc
+
+    app = create_app()
+    # wsgiref.simple_server: stdlib, single-threaded by default. The phase 2
+    # brief permits either threaded=False or a global lock; we use both —
+    # the lock guards pyaaf2 access end-to-end, and the single-threaded
+    # server avoids accidental contention. wsgiref also works on Python
+    # 3.14 where werkzeug's dev server hangs at startup.
+    server = make_server(host, port, app)
+    url = f"http://{host}:{port}/"
+    click.echo(f"aafbrowser web serving on {url}")
+    click.echo("Press Ctrl-C to stop.")
+    if not no_browser:
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+        with state_mod.state_lock():
+            state_mod.close_file()
+
+
 if __name__ == "__main__":
     cli()
