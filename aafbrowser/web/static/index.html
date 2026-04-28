@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>aafbrowser</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header id="topbar">
+    <div class="brand">aafbrowser</div>
+    <div class="file-info">
+      <span id="file-status" class="muted">No file open</span>
+      <button id="btn-open" type="button">Open…</button>
+      <button id="btn-close" type="button" hidden>Close</button>
+    </div>
+    <div class="find-box">
+      <input id="find-pattern" type="text" placeholder="regex pattern"
+             autocomplete="off" spellcheck="false">
+      <select id="find-scope" title="What to match">
+        <option value="both">names + values</option>
+        <option value="names">names only</option>
+        <option value="values">values only</option>
+      </select>
+      <select id="find-layer" title="Which layer to search">
+        <option value="both">aaf + cfb</option>
+        <option value="aaf">aaf</option>
+        <option value="cfb">cfb</option>
+      </select>
+      <button id="btn-find" type="button">Search</button>
+    </div>
+  </header>
+
+  <dialog id="open-dialog">
+    <form method="dialog" id="open-form">
+      <label for="open-path">Path to AAF file</label>
+      <input id="open-path" type="text" name="path" autocomplete="off"
+             spellcheck="false" placeholder="/abs/path/to/file.aaf">
+      <div class="actions">
+        <button type="submit" value="cancel">Cancel</button>
+        <button type="submit" value="open" id="open-submit">Open</button>
+      </div>
+      <p class="error" id="open-error" hidden></p>
+    </form>
+  </dialog>
+
+  <main id="layout">
+    <aside id="left">
+      <div class="tabs">
+        <button class="tab active" data-tab="aaf" type="button">AAF</button>
+        <button class="tab" data-tab="cfb" type="button">CFB</button>
+      </div>
+
+      <section class="tab-pane active" data-pane="aaf">
+        <div class="filter-row">
+          <input id="mob-filter" type="text" placeholder="filter by name…"
+                 autocomplete="off" spellcheck="false">
+        </div>
+        <div id="mob-list" class="scroll-list"></div>
+      </section>
+
+      <section class="tab-pane" data-pane="cfb">
+        <div class="filter-row">
+          <label class="check">
+            <input type="checkbox" id="cfb-include-metadict">
+            include MetaDictionary
+          </label>
+        </div>
+        <div id="cfb-tree" class="scroll-list"></div>
+      </section>
+    </aside>
+
+    <section id="right">
+      <nav id="breadcrumb" class="breadcrumb"></nav>
+      <div id="inspector" class="inspector">
+        <p class="muted">Open a file, then select a Mob to inspect it.</p>
+      </div>
+    </section>
+  </main>
+
+  <section id="find-panel" class="find-panel collapsed">
+    <header>
+      <button id="btn-find-toggle" type="button" class="caret">▶</button>
+      <span id="find-summary" class="muted">No search yet.</span>
+    </header>
+    <div id="find-results" class="find-results"></div>
+  </section>
+
+  <template id="tpl-mob-row">
+    <div class="mob-row">
+      <span class="name"></span>
+      <span class="badge mob-id"></span>
+    </div>
+  </template>
+
+  <template id="tpl-class-section">
+    <details class="class-section">
+      <summary>
+        <span class="class-name"></span>
+        <span class="class-count muted"></span>
+      </summary>
+      <div class="class-rows"></div>
+    </details>
+  </template>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
