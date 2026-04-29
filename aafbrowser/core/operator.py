@@ -24,6 +24,7 @@ slots, which is by construction non-cyclic.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import asdict, dataclass
 from typing import Any, Optional
 from urllib.parse import unquote, urlparse
@@ -146,11 +147,57 @@ class Track:
     edit_rate: Optional[str]         # "num/den"
     length: Optional[int]            # slot.segment.length in edit_rate units
     clip_count: int                  # number of components on the slot's Sequence
+    pan_channel: Optional[str] = None  # "L" / "R" — Premiere stereo-split signal
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["_type"] = "operator_track"
         return d
+
+
+def _track_pan_channel(segment: Any) -> Optional[str]:
+    """
+    Premiere stereo-split detection (Phase 8).
+
+    If `segment` is a Mono Audio Pan OperationGroup carrying a
+    ConstantValue parameter at the LEFT (≈0.0) or RIGHT (≈1.0)
+    extreme, return "L" or "R". Returns None for any other segment
+    shape, any non-Pan operation, missing parameters, or a pan
+    position other than hard L/R.
+
+    Avid AAFs don't carry Mono Audio Pan at the slot level (they use
+    Audio Gain + InputSegments=[Sequence] for the track wrapper),
+    so this returns None on Avid sessions and the rest of the
+    operator code stays untouched.
+    """
+    if segment is None:
+        return None
+    if type(segment).__name__ != "OperationGroup":
+        return None
+    op_def = getattr(segment, "operation", None)
+    op_name = getattr(op_def, "name", None) if op_def else None
+    if not isinstance(op_name, str) or "pan" not in op_name.lower():
+        return None
+    try:
+        params = list(getattr(segment, "parameters", None) or [])
+    except Exception:
+        return None
+    for param in params:
+        v = getattr(param, "value", None)
+        if v is None:
+            continue
+        num = getattr(v, "numerator", None)
+        den = getattr(v, "denominator", None)
+        if num is None or den is None or int(den) == 0:
+            continue
+        ratio = float(num) / float(den)
+        if ratio < 0.1:
+            return "L"
+        if ratio > 0.9:
+            return "R"
+        # Pan position other than hard L/R — defer (no channel hint)
+        return None
+    return None
 
 
 def _composition_total_slot_length(mob: Any) -> int:
@@ -265,6 +312,10 @@ def list_tracks(handle: Any) -> list[Track]:
     """
     Enumerate audio + video tracks on the topmost CompositionMob,
     ordered by slot_id ascending. Empty list if no CompositionMobs.
+
+    Phase 8: each Track also carries pan_channel ("L"/"R"/None) when
+    the slot's segment is a Mono Audio Pan OperationGroup with a
+    hard-L or hard-R parameter (Premiere stereo-split signal).
     """
     comp = pick_topmost_composition(handle)
     if comp is None:
@@ -296,6 +347,7 @@ def list_tracks(handle: Any) -> list[Track]:
                 edit_rate=_format_rational(getattr(slot, "edit_rate", None)),
                 length=int(length) if isinstance(length, int) else None,
                 clip_count=_segment_clip_count(seg),
+                pan_channel=_track_pan_channel(seg),
             )
         )
     return out
@@ -328,6 +380,13 @@ class Clip:
     terminal_mob_id: Optional[str] = None        # terminal SourceMob's mob_id (URN)
     terminal_mob_class: Optional[str] = None     # convenience: terminal hop's mob class
     sub_clips: tuple = ()                   # tuple of Clip — multi-input combiner inputs
+    # Phase 8: format-aware recovery status. "recoverable" means the
+    # operator can trust mic_identity (or sub_clips); "unrecoverable"
+    # means the AAF doesn't carry the channel info (e.g. Premiere
+    # multichannel polywav imports); "ambiguous" means the chain
+    # surfaced something but not enough to be sure.
+    recovery_status: str = "recoverable"
+    recovery_method: Optional[str] = None        # short label for how (or why not)
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -359,9 +418,69 @@ def _segment_components(segment: Any) -> list[Any]:
     return [peeled]
 
 
+# Premiere polywav-style name pattern: "Audio N" with no _L/_R suffix
+# and no other channel discriminator. Matches the corpus's documented
+# unrecoverable case.
+_POLYWAV_NAME_RE = re.compile(r"^Audio\s+\d+$")
+
+
+def _classify_recovery(
+    *,
+    authoring_kind: str,
+    pan_channel: Optional[str],
+    is_recorder: bool,
+    terminal_class: Optional[str],
+    terminal_reason: Optional[str],
+    source_mob_name: Optional[str],
+    mic_identity: Optional[str],
+) -> tuple[str, Optional[str]]:
+    """
+    Classify a clip's mic-identity recoverability into one of:
+      ("recoverable", method)   — operator can trust mic_identity
+      ("ambiguous", method)     — chain surfaced something, but no
+                                   strong recorder signal
+      ("unrecoverable", method) — channel info isn't in the AAF
+                                   (Premiere polywav, broken chain,
+                                   non-source terminal, etc.)
+
+    method is a short label describing HOW the classification was
+    reached, used for inspector display.
+    """
+    # Premiere-specific paths come first when authoring is Premiere.
+    if authoring_kind == "premiere":
+        if pan_channel:
+            return ("recoverable", f"premiere_stereo_split_pan_{pan_channel.lower()}")
+        if source_mob_name and (
+            source_mob_name.endswith("_L") or source_mob_name.endswith("_R")
+        ):
+            return ("recoverable", "premiere_stereo_split_name")
+        # Polywav heuristic: name like "Audio N" exactly, with no Pan
+        # and no _L/_R suffix → channel destroyed at import.
+        if source_mob_name and _POLYWAV_NAME_RE.match(source_mob_name):
+            return ("unrecoverable", "premiere_polywav_indeterminate")
+
+    # Avid (and generic chain-walk) recovery
+    if is_recorder:
+        return ("recoverable", "avid_chain_walk")
+
+    # Chain ended at a SourceMob but without recorder signal — could be
+    # a tape/file mob that doesn't carry PTN, or a synthetic source.
+    if terminal_class == "SourceMob":
+        return ("ambiguous", "no_recorder_signal")
+
+    # Chain ended at something that isn't a SourceMob: filler, OG,
+    # composition mob, broken ref, etc. Surface terminal_reason.
+    return (
+        "unrecoverable",
+        f"chain_terminated_{terminal_reason or 'unknown'}",
+    )
+
+
 def _build_source_clip_clip(handle: Any, index: int, comp_obj: Any,
                             timeline_start: int, length: Optional[int],
-                            comp_slot_edit_rate: Any = None) -> "Clip":
+                            comp_slot_edit_rate: Any = None,
+                            authoring_kind: str = "unknown",
+                            pan_channel: Optional[str] = None) -> "Clip":
     """Build a Clip for a SourceClip component, including chain-walk
     derived mic identity, recorder-source filter, and Phase 7 per-clip
     operator info (source locators, head/tail handles, per-clip audio
@@ -401,6 +520,8 @@ def _build_source_clip_clip(handle: Any, index: int, comp_obj: Any,
             mic_identity=None, is_recorder_source=False,
             terminal_reason=terminal_reason, physical_track_number=None,
             chain_length=0,
+            recovery_status="unrecoverable",
+            recovery_method="no_source_id",
         )
 
     source_mob_id = str(mid)
@@ -507,6 +628,28 @@ def _build_source_clip_clip(handle: Any, index: int, comp_obj: Any,
         # mob not in this file. Surface that without aborting the listing.
         terminal_reason = "broken_ref"
 
+    rec_status, rec_method = _classify_recovery(
+        authoring_kind=authoring_kind,
+        pan_channel=pan_channel,
+        is_recorder=is_recorder,
+        terminal_class=terminal_mob_class_v,
+        terminal_reason=terminal_reason,
+        source_mob_name=source_mob_name,
+        mic_identity=mic_identity,
+    )
+
+    # Premiere stereo-split: enrich the visible mic_identity with
+    # the (L)/(R) suffix when we recovered via pan but the source mob
+    # name doesn't already include _L/_R. Operator-meaningful display.
+    display_mic = mic_identity
+    if (rec_method or "").startswith("premiere_stereo_split_pan_") and pan_channel:
+        if display_mic is None:
+            display_mic = source_mob_name
+        if display_mic and not (
+            display_mic.endswith("_L") or display_mic.endswith("_R")
+        ):
+            display_mic = f"{display_mic} ({pan_channel})"
+
     return Clip(
         index=index,
         component_class="SourceClip",
@@ -515,7 +658,7 @@ def _build_source_clip_clip(handle: Any, index: int, comp_obj: Any,
         source_mob_id=source_mob_id,
         source_mob_name=source_mob_name,
         source_mob_slot_id=source_mob_slot_id,
-        mic_identity=mic_identity,
+        mic_identity=display_mic,
         is_recorder_source=is_recorder,
         terminal_reason=terminal_reason,
         physical_track_number=ptn,
@@ -530,6 +673,8 @@ def _build_source_clip_clip(handle: Any, index: int, comp_obj: Any,
         audio_channels=audio_ch,
         terminal_mob_id=terminal_mob_id_v,
         terminal_mob_class=terminal_mob_class_v,
+        recovery_status=rec_status,
+        recovery_method=rec_method,
     )
 
 
@@ -557,11 +702,45 @@ class AuthoringInfo:
     platform: Optional[str]              # "AAFSDK (Win64)"
     date: Optional[str]                  # ISO timestamp
     identification_count: int            # 1 typically; >1 means multiple revisions
+    kind: str = "unknown"                # "avid" | "premiere" | "protools" | "unknown"
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["_type"] = "operator_authoring"
         return d
+
+
+def _classify_product_name(name: Optional[str]) -> str:
+    """Normalize a Header.IdentificationList ProductName into one of
+    the kinds we branch on for format-aware recovery."""
+    if not name or not isinstance(name, str):
+        return "unknown"
+    lower = name.lower()
+    if "avid" in lower:
+        return "avid"
+    if "premiere" in lower:
+        return "premiere"
+    if "pro tools" in lower or "protools" in lower:
+        return "protools"
+    return "unknown"
+
+
+def detect_authoring_kind(handle: Any) -> str:
+    """Read Header.IdentificationList[-1].ProductName and classify
+    into 'avid' / 'premiere' / 'protools' / 'unknown'. Used by the
+    operator layer to dispatch format-specific recovery rules."""
+    try:
+        ident_list = list(handle.header["IdentificationList"].value)
+    except Exception:
+        return "unknown"
+    if not ident_list:
+        return "unknown"
+    last = ident_list[-1]
+    try:
+        nm = last["ProductName"].value
+    except Exception:
+        return "unknown"
+    return _classify_product_name(nm if isinstance(nm, str) else None)
 
 
 @dataclass(frozen=True)
@@ -627,12 +806,14 @@ def _build_authoring_info(handle: Any) -> Optional[AuthoringInfo]:
             return last[name].value
         except Exception:
             return None
+    pn = _prop("ProductName")
     return AuthoringInfo(
-        product_name=(_prop("ProductName") if isinstance(_prop("ProductName"), str) else None),
+        product_name=(pn if isinstance(pn, str) else None),
         company_name=(_prop("CompanyName") if isinstance(_prop("CompanyName"), str) else None),
         platform=(_prop("Platform") if isinstance(_prop("Platform"), str) else None),
         date=_isoformat(_prop("Date")),
         identification_count=len(ident_list),
+        kind=_classify_product_name(pn if isinstance(pn, str) else None),
     )
 
 
@@ -1225,6 +1406,8 @@ def list_clips(handle: Any, slot_id: int) -> list[Clip]:
 
     components = _segment_components(getattr(slot, "segment", None))
     comp_slot_edit_rate = getattr(slot, "edit_rate", None)
+    pan_channel = _track_pan_channel(getattr(slot, "segment", None))
+    authoring_kind = detect_authoring_kind(handle)
     out: list[Clip] = []
     cursor = 0
     for i, comp_obj in enumerate(components):
@@ -1244,7 +1427,8 @@ def list_clips(handle: Any, slot_id: int) -> list[Clip]:
             inner = _unwrap_operation_group(comp_obj)
             if inner is not None:
                 clip = _build_source_clip_clip(
-                    handle, i, inner, cursor, length, comp_slot_edit_rate
+                    handle, i, inner, cursor, length, comp_slot_edit_rate,
+                    authoring_kind, pan_channel,
                 )
                 out.append(clip)
                 if isinstance(ln_raw, int):
@@ -1261,9 +1445,26 @@ def list_clips(handle: Any, slot_id: int) -> list[Clip]:
                         if isinstance(getattr(inp, "length", None), int)
                         else None,
                         comp_slot_edit_rate,
+                        authoring_kind, pan_channel,
                     )
                     for j, inp in enumerate(input_clips)
                 )
+                # Top-level combiner clip's recoverability is the
+                # best of its sub_clips: if every input recovered,
+                # the combiner is recoverable too; if any input is
+                # ambiguous, the combiner is ambiguous; if all
+                # unrecoverable, the combiner is unrecoverable.
+                statuses = [s.recovery_status for s in sub_clips]
+                if statuses and all(s == "recoverable" for s in statuses):
+                    combiner_status = "recoverable"
+                    combiner_method = "combiner_all_inputs_recovered"
+                elif statuses and all(s == "unrecoverable" for s in statuses):
+                    combiner_status = "unrecoverable"
+                    combiner_method = "combiner_all_inputs_unrecoverable"
+                else:
+                    combiner_status = "ambiguous"
+                    combiner_method = "combiner_mixed_input_recovery"
+
                 clip = Clip(
                     index=i,
                     component_class="OperationGroup",
@@ -1281,6 +1482,8 @@ def list_clips(handle: Any, slot_id: int) -> list[Clip]:
                     physical_track_number=None,
                     chain_length=0,
                     sub_clips=sub_clips,
+                    recovery_status=combiner_status,
+                    recovery_method=combiner_method,
                 )
                 out.append(clip)
                 if isinstance(ln_raw, int):
@@ -1289,7 +1492,8 @@ def list_clips(handle: Any, slot_id: int) -> list[Clip]:
 
         if cls == "SourceClip":
             clip = _build_source_clip_clip(
-                handle, i, comp_obj, cursor, length, comp_slot_edit_rate
+                handle, i, comp_obj, cursor, length, comp_slot_edit_rate,
+                authoring_kind, pan_channel,
             )
         else:
             # Filler, multi-input OperationGroup, Timecode, EssenceGroup,
@@ -1308,6 +1512,8 @@ def list_clips(handle: Any, slot_id: int) -> list[Clip]:
                 terminal_reason=cls.lower(),
                 physical_track_number=None,
                 chain_length=0,
+                recovery_status="unrecoverable",
+                recovery_method=f"non_source_clip_{cls.lower()}",
             )
 
         out.append(clip)

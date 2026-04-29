@@ -261,6 +261,129 @@ def _write_combiner_aaf(path: Path) -> None:
         ))
 
 
+def _add_premiere_identification(f) -> None:
+    """Append a Premiere Identification entry to the file's
+    Header.IdentificationList. detect_authoring_kind reads the LAST
+    entry, so this overrides pyaaf2's default 'PyAAF' identification."""
+    import datetime
+    from aaf2.auid import AUID
+    ident = f.create.Identification()
+    ident["CompanyName"].value = "Adobe Inc."
+    ident["ProductName"].value = "Adobe Premiere Pro 24.0"
+    ident["ProductVersionString"].value = "24.0.0"
+    ident["ProductID"].value = AUID("11111111-2222-3333-4444-555555555555")
+    ident["Date"].value = datetime.datetime(2026, 1, 1, 12, 0, 0)
+    ident["GenerationAUID"].value = AUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+    f.header["IdentificationList"].append(ident)
+
+
+def _write_premiere_stereo_split_aaf(path: Path) -> None:
+    """
+    Synthetic Premiere AAF with the stereo-split pattern from
+    docs/premiere-aaf-channel-recovery.md:
+
+      CompositionMob "Premiere Stereo Comp"
+        slot 1 (Sound): segment = OperationGroup "Mono Audio Pan"
+          Parameters[0] = ConstantValue(AAFRational(0, 100M))   # Pan = 0.0 = LEFT
+          InputSegments[0] = SourceClip → MasterMob "Audio 1_L"
+        slot 2 (Sound): segment = OperationGroup "Mono Audio Pan"
+          Parameters[0] = ConstantValue(AAFRational(100M, 100M))  # Pan = 1.0 = RIGHT
+          InputSegments[0] = SourceClip → MasterMob "Audio 1_R"
+
+    Authoring info marked as Adobe Premiere Pro.
+    """
+    from aaf2.auid import AUID
+    from aaf2.rational import AAFRational
+
+    with aaf2.open(str(path), "w") as f:
+        _add_premiere_identification(f)
+
+        # Register Mono Audio Pan OperationDef + a Pan parameter def.
+        pan_op_auid = AUID("22222222-3333-4444-5555-666666666666")
+        pan_def = f.create.OperationDef(pan_op_auid, "Mono Audio Pan",
+                                         "Premiere stereo-split pan")
+        pan_def.media_kind = "Sound"
+        pan_def["NumberInputs"].value = 1
+        f.dictionary.register_def(pan_def)
+
+        pan_param_auid = AUID("33333333-4444-5555-6666-777777777777")
+        pan_param_def = f.create.ParameterDef(
+            pan_param_auid, "Pan", "pan position",
+            f.dictionary.lookup_typedef("Rational"),
+        )
+        f.dictionary.register_def(pan_param_def)
+
+        # SourceMob (one shared between L and R for fixture simplicity).
+        sm = f.create.SourceMob("PremSrc")
+        f.content.mobs.append(sm)
+        sm.descriptor = f.create.ImportDescriptor()
+        ss = sm.create_sound_slot(edit_rate=48000)
+
+        def _master(name):
+            mm = f.create.MasterMob(name)
+            f.content.mobs.append(mm)
+            ms = mm.create_sound_slot(edit_rate=48000)
+            ms.segment.components.append(f.create.SourceClip(
+                start=0, length=1000, mob_id=sm.mob_id, slot_id=ss.slot_id,
+            ))
+            return mm, ms
+
+        mm_l, ms_l = _master("Audio 1_L")
+        mm_r, ms_r = _master("Audio 1_R")
+
+        comp = f.create.CompositionMob("Premiere Stereo Comp")
+        f.content.mobs.append(comp)
+
+        def _make_pan_slot(target_mm, target_ms, pan_value):
+            slot = comp.create_sound_slot(edit_rate=48000)
+            og = f.create.OperationGroup(pan_def)
+            og.length = 1000
+            og["InputSegments"].value = [
+                f.create.SourceClip(
+                    start=0, length=1000,
+                    mob_id=target_mm.mob_id, slot_id=target_ms.slot_id,
+                ),
+            ]
+            cv = f.create.ConstantValue(pan_param_def, pan_value)
+            og["Parameters"].append(cv)
+            slot.segment = og
+            return slot
+
+        _make_pan_slot(mm_l, ms_l, AAFRational(0, 100_000_000))           # LEFT
+        _make_pan_slot(mm_r, ms_r, AAFRational(100_000_000, 100_000_000)) # RIGHT
+
+
+def _write_premiere_polywav_aaf(path: Path) -> None:
+    """
+    Synthetic Premiere AAF mimicking the multichannel polywav import
+    pattern: identical-metadata MasterMobs named "Audio N" with no
+    Mono Audio Pan, no _L/_R suffix, and no PhysicalTrackNumber.
+    The real-world signature is "channel identity destroyed at
+    import" — surfaced via recovery_status="unrecoverable".
+    """
+    with aaf2.open(str(path), "w") as f:
+        _add_premiere_identification(f)
+
+        sm = f.create.SourceMob("PolySrc")
+        f.content.mobs.append(sm)
+        sm.descriptor = f.create.ImportDescriptor()
+        ss = sm.create_sound_slot(edit_rate=48000)
+
+        comp = f.create.CompositionMob("Premiere Polywav Comp")
+        f.content.mobs.append(comp)
+        for i in (1, 2):
+            mm = f.create.MasterMob(f"Audio {i}")
+            f.content.mobs.append(mm)
+            ms = mm.create_sound_slot(edit_rate=48000)
+            ms.segment.components.append(f.create.SourceClip(
+                start=0, length=1000, mob_id=sm.mob_id, slot_id=ss.slot_id,
+            ))
+            comp_slot = comp.create_sound_slot(edit_rate=48000)
+            comp_slot.segment.components.append(f.create.SourceClip(
+                start=0, length=1000, mob_id=mm.mob_id, slot_id=ms.slot_id,
+            ))
+
+
 def _write_broken_ref_aaf(path: Path) -> None:
     """A MasterMob whose SourceClip references a MobID that's not in the file."""
     from aaf2.mobid import MobID
@@ -312,6 +435,20 @@ def multi_track_aaf(fixture_dir: Path) -> Path:
 def combiner_aaf(fixture_dir: Path) -> Path:
     p = fixture_dir / "combiner.aaf"
     _write_combiner_aaf(p)
+    return p
+
+
+@pytest.fixture(scope="session")
+def premiere_stereo_split_aaf(fixture_dir: Path) -> Path:
+    p = fixture_dir / "premiere_stereo_split.aaf"
+    _write_premiere_stereo_split_aaf(p)
+    return p
+
+
+@pytest.fixture(scope="session")
+def premiere_polywav_aaf(fixture_dir: Path) -> Path:
+    p = fixture_dir / "premiere_polywav.aaf"
+    _write_premiere_polywav_aaf(p)
     return p
 
 

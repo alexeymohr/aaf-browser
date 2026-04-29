@@ -414,6 +414,104 @@ def test_is_online_for_existing_and_missing(tmp_path):
     assert _is_online("urn:smpte:umid:abc") is None
 
 
+# ---------- Phase 8: authoring detection + Premiere recovery ----------
+
+
+def test_classify_product_name():
+    from aafbrowser.core.operator import _classify_product_name
+    assert _classify_product_name("Avid Media Composer 24.12.1") == "avid"
+    assert _classify_product_name("Adobe Premiere Pro 24.0") == "premiere"
+    assert _classify_product_name("Pro Tools 2024.6") == "protools"
+    assert _classify_product_name("Protools") == "protools"
+    assert _classify_product_name("DaVinci Resolve") == "unknown"
+    assert _classify_product_name(None) == "unknown"
+    assert _classify_product_name("") == "unknown"
+
+
+def test_detect_authoring_kind_pwd_310_is_avid():
+    """Real Avid AAF must classify as 'avid'."""
+    import aaf2
+    from aafbrowser.core.operator import detect_authoring_kind
+    import os
+    sample = "samples/PWD_310_LC_10-07-2025.aaf"
+    if not os.path.exists(sample):
+        return  # opt-in: skip when sample missing
+    with aaf2.open(sample, "r") as f:
+        assert detect_authoring_kind(f) == "avid"
+
+
+def test_detect_authoring_kind_premiere_fixture(premiere_stereo_split_aaf):
+    import aaf2
+    from aafbrowser.core.operator import detect_authoring_kind
+    with aaf2.open(str(premiere_stereo_split_aaf), "r") as f:
+        assert detect_authoring_kind(f) == "premiere"
+
+
+def test_track_pan_channel_premiere_stereo_split(premiere_stereo_split_aaf):
+    import aaf2
+    with aaf2.open(str(premiere_stereo_split_aaf), "r") as f:
+        tracks = list_tracks(f)
+    assert len(tracks) == 2
+    assert tracks[0].pan_channel == "L"
+    assert tracks[1].pan_channel == "R"
+
+
+def test_track_pan_channel_silent_on_avid(chain_aaf):
+    """Avid AAFs don't carry Mono Audio Pan; pan_channel must be None."""
+    import aaf2
+    with aaf2.open(str(chain_aaf), "r") as f:
+        tracks = list_tracks(f)
+    assert all(t.pan_channel is None for t in tracks)
+
+
+def test_premiere_stereo_split_clip_recovery(premiere_stereo_split_aaf):
+    """Each Premiere stereo-split clip recovers via Mono Audio Pan."""
+    import aaf2
+    with aaf2.open(str(premiere_stereo_split_aaf), "r") as f:
+        l_clips = list_clips(f, 1)
+        r_clips = list_clips(f, 2)
+    assert l_clips[0].recovery_status == "recoverable"
+    assert l_clips[0].recovery_method == "premiere_stereo_split_pan_l"
+    # mic_identity already ends in _L (the SourceMob name); no double-suffix
+    assert l_clips[0].mic_identity == "Audio 1_L"
+    assert r_clips[0].recovery_status == "recoverable"
+    assert r_clips[0].recovery_method == "premiere_stereo_split_pan_r"
+    assert r_clips[0].mic_identity == "Audio 1_R"
+
+
+def test_premiere_polywav_clip_unrecoverable(premiere_polywav_aaf):
+    """Premiere polywav imports — channel destroyed — must be marked
+    unrecoverable explicitly so consumers don't trust the mic name."""
+    import aaf2
+    with aaf2.open(str(premiere_polywav_aaf), "r") as f:
+        clips_a = list_clips(f, 1)
+        clips_b = list_clips(f, 2)
+    for c in (clips_a[0], clips_b[0]):
+        assert c.recovery_status == "unrecoverable"
+        assert c.recovery_method == "premiere_polywav_indeterminate"
+
+
+def test_avid_recovery_status_unchanged(chain_aaf):
+    """chain_aaf's chain hits a SourceMob with PTN=7 → recoverable
+    via avid_chain_walk."""
+    import aaf2
+    with aaf2.open(str(chain_aaf), "r") as f:
+        clips = list_clips(f, 1)
+    assert clips[0].recovery_status == "recoverable"
+    assert clips[0].recovery_method == "avid_chain_walk"
+
+
+def test_combiner_recovery_status_aggregates(combiner_aaf):
+    """A multi-input combiner whose inputs all recover should itself
+    be marked 'recoverable' with combiner_all_inputs_recovered."""
+    import aaf2
+    with aaf2.open(str(combiner_aaf), "r") as f:
+        clips = list_clips(f, 1)
+    og = next(c for c in clips if c.component_class == "OperationGroup")
+    assert og.recovery_status == "recoverable"
+    assert og.recovery_method == "combiner_all_inputs_recovered"
+
+
 def test_session_summary_includes_authoring_when_present(multi_track_aaf):
     """pyaaf2's writer populates Header.IdentificationList with a
     "pyaaf2" identification entry on file write — every fixture AAF
