@@ -32,3 +32,6 @@ htmlcov/
 # macOS bundle build artifacts
 packaging/macos/icon.icns
 packaging/macos/icon.iconset/
+
+# Local scratch / one-off investigation scripts (never committed)
+tmp/
