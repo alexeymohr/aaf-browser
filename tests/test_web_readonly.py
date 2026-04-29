@@ -117,6 +117,8 @@ def test_every_endpoint_leaves_input_byte_identical(client, minimal_aaf_copy):
     client.get("/api/tracks")
     client.get("/api/session")
     client.get("/api/track/clips?slot=1")
+    # Phase 7: source pull list.
+    client.get("/api/sources")
     check("operator")
 
     # Close

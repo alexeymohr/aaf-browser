@@ -655,6 +655,91 @@ def test_session_no_file_open(client):
     assert r.status_code == 409
 
 
+# --- /api/sources (Phase 7 cross-track pull list) ---
+
+
+def test_sources_no_file_open(client):
+    r = client.get("/api/sources")
+    assert r.status_code == 409
+
+
+def test_sources_combiner_aaf_inventory(client, combiner_aaf):
+    """combiner_aaf has 3 SourceMobs (CombSrcA/B/C). Each is referenced
+    by clips on the topmost composition (CombinerComp): SrcC by the
+    plain SourceClip [0], SrcA + SrcB by the OperationGroup combiner
+    [1] sub-clips. So all three should have use_count > 0."""
+    client.post("/api/open", json={"path": str(combiner_aaf)})
+    r = client.get("/api/sources")
+    assert r.status_code == 200
+    j = r.get_json()
+    assert "sources" in j
+    by_name = {s["name"]: s for s in j["sources"] if s["name"]}
+    # All three named source mobs present
+    assert "CombSrcA" in by_name
+    assert "CombSrcB" in by_name
+    assert "CombSrcC" in by_name
+    # Each used at least once on the topmost comp (CombinerComp)
+    assert by_name["CombSrcA"]["use_count"] >= 1
+    assert by_name["CombSrcB"]["use_count"] >= 1
+    assert by_name["CombSrcC"]["use_count"] >= 1
+    # used_by entries carry track + clip context
+    for name in ("CombSrcA", "CombSrcB", "CombSrcC"):
+        assert len(by_name[name]["used_by"]) >= 1
+        u = by_name[name]["used_by"][0]
+        assert "track_slot_id" in u
+        assert "clip_index" in u
+        assert "timeline_start" in u
+
+
+def test_sources_cached_after_first_call(client, combiner_aaf):
+    """The first /api/sources call computes and caches; the second
+    call should return the same cached payload without recomputing.
+    We verify by checking the cached field on _state isn't None
+    after a successful call."""
+    from aafbrowser.web import state as state_mod
+    client.post("/api/open", json={"path": str(combiner_aaf)})
+    with state_mod.state_lock():
+        assert state_mod._state.source_inventory is None
+    client.get("/api/sources")
+    with state_mod.state_lock():
+        assert state_mod._state.source_inventory is not None
+        assert len(state_mod._state.source_inventory) > 0
+
+
+def test_sources_cleared_on_close(client, combiner_aaf):
+    """Closing the file clears the cached inventory."""
+    from aafbrowser.web import state as state_mod
+    client.post("/api/open", json={"path": str(combiner_aaf)})
+    client.get("/api/sources")
+    client.post("/api/close")
+    with state_mod.state_lock():
+        assert state_mod._state.source_inventory is None
+
+
+# --- /api/track/clips Phase 7 fields ---
+
+
+def test_track_clips_response_includes_phase7_fields(client, combiner_aaf):
+    """The Clip dicts gain Phase 7 fields (sub_clips, source_locators,
+    head/tail handles, audio specs, terminal_mob_id) without breaking
+    the existing shape."""
+    client.post("/api/open", json={"path": str(combiner_aaf)})
+    j = client.get("/api/track/clips?slot=1").get_json()
+    clips = j["clips"]
+    # OG clip has 2 sub_clips
+    og = next(c for c in clips if c["component_class"] == "OperationGroup")
+    assert isinstance(og["sub_clips"], list)
+    assert len(og["sub_clips"]) == 2
+    assert all(s["_type"] == "operator_clip" for s in og["sub_clips"])
+    # Plain SourceClip has expected new fields (None when no audio
+    # descriptor — combiner_aaf uses ImportDescriptors)
+    sc = next(c for c in clips if c["component_class"] == "SourceClip")
+    for k in ("source_locators", "head_handle_frames", "tail_handle_frames",
+              "audio_sample_rate", "audio_bits_per_sample", "audio_channels",
+              "terminal_mob_id", "terminal_mob_class"):
+        assert k in sc
+
+
 def test_session_summary_basic(client, multi_track_aaf):
     client.post("/api/open", json={"path": str(multi_track_aaf)})
     r = client.get("/api/session")

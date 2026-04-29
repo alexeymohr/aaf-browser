@@ -599,6 +599,38 @@ def _register_routes(app: Flask) -> None:
             "tracks": [t.to_dict() for t in tracks],
         })
 
+    @app.get("/api/sources")
+    @_require_open
+    def api_sources():
+        """
+        Cross-track deduplicated source-mob inventory (Phase 7).
+
+        First call walks every clip in the topmost composition to
+        compute use_count + used_by per source mob. Subsequent calls
+        return the cached result. Cleared on /api/close + /api/open.
+
+        Cost: ~3-6s on a 6000-clip session (PWD_310). Frontend shows
+        a spinner; subsequent visits are instant.
+        """
+        with state_mod.state_lock():
+            if not state_mod.is_open():
+                return _err(409, "no_file_open")
+            handle = state_mod._state.handle
+            sha = state_mod._state.sha256
+            cached = state_mod._state.source_inventory
+            if cached is None:
+                try:
+                    inventory = operator_mod.source_inventory(handle)
+                except Exception as exc:
+                    return _internal(exc)
+                cached = [e.to_dict() for e in inventory]
+                state_mod._state.source_inventory = cached
+        return jsonify({
+            "sha256": sha,
+            "sources": cached,
+            "total": len(cached),
+        })
+
     @app.get("/api/session")
     @_require_open
     def api_session():

@@ -33,6 +33,10 @@ class _State:
     # Each entry: {"mob_id": str, "class": str, "name": str | None,
     #              "slot_count": int}
     mob_index: list[dict[str, Any]] = field(default_factory=list)
+    # Phase 7 source inventory: built lazily on first /api/sources request
+    # (since it walks every clip in the topmost composition). None
+    # until built. Cleared on close.
+    source_inventory: Optional[list[dict[str, Any]]] = None
 
 
 _state = _State()
@@ -138,6 +142,7 @@ def _close_locked() -> None:
     _state.path = None
     _state.sha256 = None
     _state.mob_index = []
+    _state.source_inventory = None
 
 
 def close_file() -> None:

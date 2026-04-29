@@ -325,6 +325,8 @@ class Clip:
     audio_sample_rate: Optional[str] = None      # "48000/1"
     audio_bits_per_sample: Optional[int] = None
     audio_channels: Optional[int] = None
+    terminal_mob_id: Optional[str] = None        # terminal SourceMob's mob_id (URN)
+    terminal_mob_class: Optional[str] = None     # convenience: terminal hop's mob class
     sub_clips: tuple = ()                   # tuple of Clip — multi-input combiner inputs
 
     def to_dict(self) -> dict[str, Any]:
@@ -379,6 +381,8 @@ def _build_source_clip_clip(handle: Any, index: int, comp_obj: Any,
     audio_sr: Optional[str] = None
     audio_bps: Optional[int] = None
     audio_ch: Optional[int] = None
+    terminal_mob_id_v: Optional[str] = None
+    terminal_mob_class_v: Optional[str] = None
 
     mid = getattr(comp_obj, "mob_id", None)
     if mid is None or getattr(mid, "int", 0) == 0:
@@ -433,20 +437,50 @@ def _build_source_clip_clip(handle: Any, index: int, comp_obj: Any,
                         mic_identity = h.mob_name
                         break
 
-        # Phase 7: per-clip operator info derived from the terminal
-        # SourceMob's descriptor. Best-effort — failures are silent
-        # and just leave fields None.
+        # Phase 7: per-clip operator info derived from the chain hops.
+        #
+        # In real Avid AAFs the chain is typically:
+        #   MasterMob → file SourceMob (WAVE/PCM/AIFC, with Locator)
+        #             → tape SourceMob (TapeDescriptor, NAMED with the
+        #               recorder channel identifier)
+        #
+        # The terminal mob is the named tape mob (drives mic_identity).
+        # But the file path + audio specs + handle math live on the
+        # MID-CHAIN file mob with the WAVE/PCM/AIFC descriptor. Scan
+        # every hop for the first SourceMob whose descriptor carries
+        # audio info; use it for locators / audio specs / handles.
+        terminal_mob_id_v = (
+            terminal.mob_id if isinstance(terminal.mob_id, str) and terminal.mob_id else None
+        )
+        terminal_mob_class_v = terminal.mob_class
+
+        # Handles: computed from the terminal SourceMob's slot (regardless
+        # of descriptor type — the math is just slot lengths).
         terminal_mob = _resolve_mob_by_id_str(handle, terminal.mob_id)
         if terminal_mob is not None and type(terminal_mob).__name__ == "SourceMob":
-            desc = getattr(terminal_mob, "descriptor", None)
-            source_locators = _collect_locators(desc)
-            audio_info = _audio_descriptor_info(desc) or {}
-            audio_sr = audio_info.get("sample_rate")
-            audio_bps = audio_info.get("bits_per_sample")
-            audio_ch = audio_info.get("channels")
             head_h, tail_h, head_s, tail_s = _compute_handles(
                 comp_obj, terminal_mob, terminal.slot_id,
             )
+
+        # Audio info + locators: scan all hops for the first SourceMob
+        # whose descriptor carries audio-format info. In real Avid
+        # AAFs that's the MID-CHAIN file mob (WAVE/PCM/AIFC); the
+        # named terminal tape mob has TapeDescriptor with no specs.
+        for h in hops:
+            if h.mob_class != "SourceMob":
+                continue
+            mob_obj = _resolve_mob_by_id_str(handle, h.mob_id)
+            if mob_obj is None:
+                continue
+            desc = getattr(mob_obj, "descriptor", None)
+            audio_info = _audio_descriptor_info(desc)
+            if audio_info is None:
+                continue
+            source_locators = _collect_locators(desc)
+            audio_sr = audio_info.get("sample_rate")
+            audio_bps = audio_info.get("bits_per_sample")
+            audio_ch = audio_info.get("channels")
+            break
     except ValueError:
         # walk_chain raises ValueError when the SourceClip points at a
         # mob not in this file. Surface that without aborting the listing.
@@ -473,6 +507,8 @@ def _build_source_clip_clip(handle: Any, index: int, comp_obj: Any,
         audio_sample_rate=audio_sr,
         audio_bits_per_sample=audio_bps,
         audio_channels=audio_ch,
+        terminal_mob_id=terminal_mob_id_v,
+        terminal_mob_class=terminal_mob_class_v,
     )
 
 
@@ -944,6 +980,113 @@ def _build_timecode_info(comp: Any) -> Optional[TimecodeInfo]:
             bool(drop) if drop is not None else False,
         ),
     )
+
+
+@dataclass(frozen=True)
+class SourceInventoryEntry:
+    """Per-SourceMob entry in the cross-track source pull list."""
+    mob_id: str
+    name: Optional[str]
+    descriptor_class: Optional[str]
+    sample_rate: Optional[str]
+    bits_per_sample: Optional[int]
+    channels: Optional[int]
+    locators: tuple = ()                # tuple of {url, kind, online} dicts
+    use_count: int = 0                  # number of clip references in topmost composition
+    used_by: tuple = ()                 # tuple of {track_slot_id, track_name, clip_index, timeline_start}
+
+    def to_dict(self) -> dict[str, Any]:
+        d = asdict(self)
+        d["_type"] = "operator_source_entry"
+        d["locators"] = list(self.locators)
+        d["used_by"] = list(self.used_by)
+        return d
+
+
+def _flatten_clip_terminal_mob_ids(clip: "Clip") -> list[str]:
+    """Walk a Clip and any sub_clips, collecting terminal SourceMob IDs."""
+    out: list[str] = []
+    if clip.terminal_mob_id and clip.terminal_mob_class == "SourceMob":
+        out.append(clip.terminal_mob_id)
+    for sub in clip.sub_clips:
+        if isinstance(sub, Clip):
+            out.extend(_flatten_clip_terminal_mob_ids(sub))
+    return out
+
+
+def source_inventory(handle: Any, *, max_used_by_per_source: int = 50) -> list[SourceInventoryEntry]:
+    """
+    Cross-track deduplicated source-mob inventory.
+
+    Iterates every SourceMob in the file (descriptor info, locators)
+    then walks every audio + video clip on the topmost CompositionMob
+    to populate per-mob use_count and used_by lists.
+
+    Cost note: walks every clip in the topmost composition (~6000 on
+    PWD_310). At sub-ms per chain walk this is a few seconds. Cache
+    at the call site (web/state) — don't recompute per request.
+    """
+    by_mob_id: dict[str, dict[str, Any]] = {}
+    for sm in handle.content.sourcemobs():
+        desc = getattr(sm, "descriptor", None)
+        info = _audio_descriptor_info(desc) or {}
+        nm = getattr(sm, "name", None)
+        by_mob_id[str(sm.mob_id)] = {
+            "mob_id": str(sm.mob_id),
+            "name": nm if isinstance(nm, str) else None,
+            "descriptor_class": type(desc).__name__ if desc is not None else None,
+            "sample_rate": info.get("sample_rate"),
+            "bits_per_sample": info.get("bits_per_sample"),
+            "channels": info.get("channels"),
+            "locators": _collect_locators(desc),
+            "use_count": 0,
+            "used_by": [],
+        }
+
+    comp = pick_topmost_composition(handle)
+    if comp is not None:
+        for slot in getattr(comp, "slots", []) or []:
+            kind = _KIND_FROM_MEDIA.get(getattr(slot, "media_kind", None))
+            if kind is None:
+                continue
+            slot_id = int(getattr(slot, "slot_id", 0) or 0)
+            slot_name_raw = getattr(slot, "name", None)
+            slot_name = slot_name_raw if isinstance(slot_name_raw, str) and slot_name_raw else None
+            try:
+                clips = list_clips(handle, slot_id)
+            except Exception:
+                continue
+            for clip in clips:
+                for hit in _flatten_clip_terminal_mob_ids(clip):
+                    entry = by_mob_id.get(hit)
+                    if entry is None:
+                        continue
+                    entry["use_count"] += 1
+                    if len(entry["used_by"]) < max_used_by_per_source:
+                        entry["used_by"].append({
+                            "track_slot_id": slot_id,
+                            "track_name": slot_name,
+                            "clip_index": clip.index,
+                            "timeline_start": clip.timeline_start,
+                        })
+
+    out: list[SourceInventoryEntry] = []
+    for raw in by_mob_id.values():
+        out.append(SourceInventoryEntry(
+            mob_id=raw["mob_id"],
+            name=raw["name"],
+            descriptor_class=raw["descriptor_class"],
+            sample_rate=raw["sample_rate"],
+            bits_per_sample=raw["bits_per_sample"],
+            channels=raw["channels"],
+            locators=tuple(raw["locators"]),
+            use_count=raw["use_count"],
+            used_by=tuple(raw["used_by"]),
+        ))
+    # Sort: most-used first, then alphabetical by name. Keeps the pull
+    # list operator-meaningful (sources actually in use float to top).
+    out.sort(key=lambda e: (-e.use_count, (e.name or "").lower()))
+    return out
 
 
 def session_summary(handle: Any, *, file_size_bytes: Optional[int] = None) -> SessionSummary:
