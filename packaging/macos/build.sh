@@ -114,6 +114,40 @@ if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
   codesign --sign "$CODESIGN_IDENTITY" --timestamp "$DMG_PATH"
 fi
 
+# -- notarization (opt-in) -------------------------------------------
+# Gated on NOTARIZE=1. Two credential paths:
+#   - NOTARYTOOL_PROFILE=<name>: stored credential profile via
+#     `xcrun notarytool store-credentials`. Recommended for local
+#     iter (one-time setup, no env vars needed thereafter).
+#   - APPLE_ID + APPLE_TEAM_ID + APPLE_APP_PASSWORD env vars: passed
+#     each time. Suited for CI where secrets are injected at build.
+# Without NOTARIZE=1, this section is inert and local builds stay
+# fast. See docs/notarization-setup.md for the one-time setup.
+if [[ "${NOTARIZE:-0}" == "1" ]]; then
+  if [[ -z "${CODESIGN_IDENTITY:-}" ]]; then
+    echo "==> NOTARIZE=1 set but CODESIGN_IDENTITY is empty" >&2
+    echo "    Notarization requires a Developer ID-signed bundle." >&2
+    exit 1
+  fi
+  echo "==> Submitting to Apple notary service (this can take a minute)"
+  if [[ -n "${NOTARYTOOL_PROFILE:-}" ]]; then
+    xcrun notarytool submit "$DMG_PATH" \
+      --keychain-profile "$NOTARYTOOL_PROFILE" --wait
+  else
+    : "${APPLE_ID:?APPLE_ID env var required when NOTARYTOOL_PROFILE is unset}"
+    : "${APPLE_TEAM_ID:?APPLE_TEAM_ID env var required}"
+    : "${APPLE_APP_PASSWORD:?APPLE_APP_PASSWORD env var required}"
+    xcrun notarytool submit "$DMG_PATH" \
+      --apple-id "$APPLE_ID" \
+      --team-id "$APPLE_TEAM_ID" \
+      --password "$APPLE_APP_PASSWORD" \
+      --wait
+  fi
+  echo "==> Stapling notarization ticket"
+  xcrun stapler staple "$DMG_PATH"
+  xcrun stapler validate "$DMG_PATH"
+fi
+
 echo
 echo "Build complete:"
 echo "  $APP"

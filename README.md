@@ -15,7 +15,8 @@ the briefs at [docs/phase1-brief.md](docs/phase1-brief.md) (CLI),
 [docs/phase5-brief.md](docs/phase5-brief.md) (embedded WKWebView),
 [docs/phase6-brief.md](docs/phase6-brief.md) (operator-first browser layer),
 [docs/phase7-brief.md](docs/phase7-brief.md) (deeper recovery + per-clip info + Sources pull list),
-and [docs/phase8-brief.md](docs/phase8-brief.md) (Premiere-aware recovery).
+[docs/phase8-brief.md](docs/phase8-brief.md) (Premiere-aware recovery),
+and [docs/phase9-brief.md](docs/phase9-brief.md) (CLI parity + notarization).
 
 ## Install — macOS app (recommended)
 
@@ -311,6 +312,51 @@ Terminal reasons cover every non-chainable shape: `essence`,
 `multi_segment_sequence`, `empty_sequence`, `max_hops_reached`,
 `invalid_slot`, `non_clip_segment:<class>`. The walker is cycle-safe
 (visited `(mob_id, slot_id)` set).
+
+### `aafbrowser session <file.aaf>` (Phase 9)
+
+Headline summary of the file: composition, track + clip + mob counts,
+audio specs, timecode, authoring (with detected NLE kind), duration.
+Mirrors the GUI's session bar; `--json` matches `/api/session`.
+
+```sh
+aafbrowser session session.aaf
+aafbrowser session session.aaf --json | jq .session.timecode
+```
+
+### `aafbrowser tracks <file.aaf>` (Phase 9)
+
+Audio + video tracks on the topmost CompositionMob, with PT-style
+A1/V1 ordinals and clip counts. Premiere stereo-split tracks show
+`[L]`/`[R]` next to the name.
+
+```sh
+aafbrowser tracks session.aaf
+aafbrowser tracks session.aaf --json
+```
+
+### `aafbrowser clips <file.aaf> --slot N` (Phase 9)
+
+Clips on a single track: timeline timecode, length, recovered mic
+identity (Phase 6 chain-walk), recovery_status (Phase 8 format-aware
+classification), and sub-clip fan-out for multi-input combiners
+(Phase 7).
+
+```sh
+aafbrowser clips session.aaf --slot 3
+aafbrowser clips session.aaf --slot 3 --json | jq '.clips[] | select(.recovery_status == "unrecoverable")'
+```
+
+### `aafbrowser sources <file.aaf>` (Phase 9)
+
+Cross-track deduplicated source-mob pull list with per-mob use
+counts. Defaults to "used" sources (use_count > 0); `--unused`
+includes everything in the file. Mirrors the GUI's Sources tab.
+
+```sh
+aafbrowser sources session.aaf
+aafbrowser sources session.aaf --json | jq '.sources[] | {name, use_count}'
+```
 
 ## Type-tagged JSON
 
