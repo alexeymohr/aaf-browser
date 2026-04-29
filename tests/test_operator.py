@@ -309,6 +309,111 @@ def test_session_summary_audio_aggregation_empty(multi_track_aaf):
     assert s.audio.channel_counts == {}
 
 
+# ---------- Phase 7: per-clip operator info ----------
+
+
+def test_clip_carries_handle_fields_on_chain_aaf(chain_aaf):
+    """chain_aaf's MasterMob slot has total length 48000; the comp-level
+    SourceClip uses start=0 length=48000, so head=0 tail=0."""
+    with aaf2.open(str(chain_aaf), "r") as f:
+        clips = list_clips(f, 1)
+    c = clips[0]
+    # head_handle_frames: SourceClip.start = 0
+    assert c.head_handle_frames == 0
+    # tail_handle: master slot total - (start + length). The chain
+    # walk's terminal SourceMob's slot.segment is a SourceClip (the
+    # fixture's pattern), with length 48000 at edit_rate 48000/1.
+    # head_handle_seconds at 48k = 0 / 48000 = 0.0
+    assert c.head_handle_seconds == 0.0
+
+
+def test_clip_locators_empty_for_import_descriptor(chain_aaf):
+    """ImportDescriptor on chain_aaf carries no Locator entries."""
+    with aaf2.open(str(chain_aaf), "r") as f:
+        clips = list_clips(f, 1)
+    assert clips[0].source_locators == ()
+
+
+def test_clip_to_dict_includes_phase7_fields(chain_aaf):
+    with aaf2.open(str(chain_aaf), "r") as f:
+        d = list_clips(f, 1)[0].to_dict()
+    assert "source_locators" in d
+    assert "head_handle_frames" in d
+    assert "tail_handle_frames" in d
+    assert "audio_sample_rate" in d
+    assert "audio_bits_per_sample" in d
+    assert "audio_channels" in d
+    assert "sub_clips" in d
+    assert isinstance(d["source_locators"], list)
+    assert isinstance(d["sub_clips"], list)
+
+
+# ---------- Phase 7: multi-input combiner fan-out ----------
+
+
+def test_list_clips_fans_out_on_multi_input_combiner(combiner_aaf):
+    """CombinerComp slot 1 has [SourceClip(C), OperationGroup(A+B)].
+    list_clips must yield 2 top-level clips: a normal SourceClip clip
+    and an OperationGroup clip with 2 sub_clips."""
+    with aaf2.open(str(combiner_aaf), "r") as f:
+        clips = list_clips(f, 1)
+    assert len(clips) == 2
+    # [0] SourceClip pointing at CombMstC -> CombSrcC
+    assert clips[0].component_class == "SourceClip"
+    assert clips[0].mic_identity == "CombSrcC"
+    assert clips[0].sub_clips == ()
+    # [1] OperationGroup combining CombMstA + CombMstB
+    og_clip = clips[1]
+    assert og_clip.component_class == "OperationGroup"
+    assert og_clip.mic_identity is None
+    assert og_clip.is_recorder_source is False
+    assert og_clip.terminal_reason == "combiner:TestStereoMix"
+    assert len(og_clip.sub_clips) == 2
+    # Each sub_clip is itself a Clip with its own recovered identity
+    sub_a, sub_b = og_clip.sub_clips
+    assert sub_a.mic_identity == "CombSrcA"
+    assert sub_a.physical_track_number == 1
+    assert sub_a.is_recorder_source is True
+    assert sub_b.mic_identity == "CombSrcB"
+    assert sub_b.physical_track_number == 2
+    assert sub_b.is_recorder_source is True
+
+
+def test_combiner_clip_to_dict_recursive_sub_clips(combiner_aaf):
+    """Top-level clip's to_dict contains nested sub_clip dicts."""
+    with aaf2.open(str(combiner_aaf), "r") as f:
+        clips = list_clips(f, 1)
+    d = clips[1].to_dict()
+    assert d["component_class"] == "OperationGroup"
+    assert len(d["sub_clips"]) == 2
+    assert all(s["_type"] == "operator_clip" for s in d["sub_clips"])
+    assert d["sub_clips"][0]["mic_identity"] == "CombSrcA"
+
+
+# ---------- Phase 7: locator helpers ----------
+
+
+def test_url_to_local_path_handles_common_forms():
+    from aafbrowser.core.operator import _url_to_local_path
+    assert _url_to_local_path("/abs/path") == "/abs/path"
+    assert _url_to_local_path("file:///abs/path/file.wav") == "/abs/path/file.wav"
+    assert _url_to_local_path("file:///path%20with%20spaces.wav") == "/path with spaces.wav"
+    assert _url_to_local_path("urn:smpte:umid:abc") is None
+    assert _url_to_local_path("http://example.com/x") is None
+    assert _url_to_local_path("relative/path") is None
+
+
+def test_is_online_for_existing_and_missing(tmp_path):
+    from aafbrowser.core.operator import _is_online
+    real = tmp_path / "real.txt"
+    real.write_text("hi")
+    assert _is_online(f"file://{real}") is True
+    assert _is_online(f"file://{tmp_path}/missing.wav") is False
+    # Non-local URL → unknown
+    assert _is_online("http://example.com/x") is None
+    assert _is_online("urn:smpte:umid:abc") is None
+
+
 def test_session_summary_includes_authoring_when_present(multi_track_aaf):
     """pyaaf2's writer populates Header.IdentificationList with a
     "pyaaf2" identification entry on file write — every fixture AAF

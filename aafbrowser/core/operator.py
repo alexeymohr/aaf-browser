@@ -8,16 +8,28 @@ recover mic identity per clip, but adds no new pyaaf2 walking
 primitives of its own — track/clip enumeration is straightforward
 iteration over a single CompositionMob's slots.
 
+Phase 7 adds:
+- Source file path + online/offline detection per clip (from terminal
+  SourceMob locators).
+- Head/tail handle frames + seconds per clip.
+- Per-clip audio specs (sample rate / bit depth / channels).
+- Multi-input OperationGroup fan-out via chain.walk_chain_tree
+  populating Clip.sub_clips.
+- source_inventory: cross-track deduplicated source-mob list.
+
 Cycle safety: the chain-walk handles cycles internally via its own
 visited-set. Track and clip enumeration walks one CompositionMob's
 slots, which is by construction non-cyclic.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import asdict, dataclass
 from typing import Any, Optional
+from urllib.parse import unquote, urlparse
 
 from . import chain as chain_mod
+from . import resolver as resolver_mod
 
 
 # Map pyaaf2 slot.media_kind values to operator-meaningful kinds.
@@ -304,9 +316,25 @@ class Clip:
     physical_track_number: Optional[int]    # PTN at the terminal hop's slot
     chain_length: int                       # number of hops walked (0 for non-SourceClip)
 
+    # Phase 7: per-clip operator info
+    source_locators: tuple = ()             # tuple of {url, kind, online} dicts
+    head_handle_frames: Optional[int] = None
+    tail_handle_frames: Optional[int] = None
+    head_handle_seconds: Optional[float] = None
+    tail_handle_seconds: Optional[float] = None
+    audio_sample_rate: Optional[str] = None      # "48000/1"
+    audio_bits_per_sample: Optional[int] = None
+    audio_channels: Optional[int] = None
+    sub_clips: tuple = ()                   # tuple of Clip — multi-input combiner inputs
+
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["_type"] = "operator_clip"
+        # Tuples become lists in asdict; ensure sub_clips and locators
+        # are list-of-dict for JSON consumers.
+        d["source_locators"] = list(self.source_locators)
+        d["sub_clips"] = [c.to_dict() if isinstance(c, Clip) else c
+                          for c in self.sub_clips]
         return d
 
 
@@ -332,7 +360,9 @@ def _segment_components(segment: Any) -> list[Any]:
 def _build_source_clip_clip(handle: Any, index: int, comp_obj: Any,
                             timeline_start: int, length: Optional[int]) -> "Clip":
     """Build a Clip for a SourceClip component, including chain-walk
-    derived mic identity and recorder-source filter."""
+    derived mic identity, recorder-source filter, and Phase 7 per-clip
+    operator info (source locators, head/tail handles, per-clip audio
+    specs)."""
     source_mob_id = None
     source_mob_name = None
     source_mob_slot_id = None
@@ -341,6 +371,14 @@ def _build_source_clip_clip(handle: Any, index: int, comp_obj: Any,
     terminal_reason = None
     ptn = None
     chain_length = 0
+    source_locators: tuple = ()
+    head_h: Optional[int] = None
+    tail_h: Optional[int] = None
+    head_s: Optional[float] = None
+    tail_s: Optional[float] = None
+    audio_sr: Optional[str] = None
+    audio_bps: Optional[int] = None
+    audio_ch: Optional[int] = None
 
     mid = getattr(comp_obj, "mob_id", None)
     if mid is None or getattr(mid, "int", 0) == 0:
@@ -394,6 +432,21 @@ def _build_source_clip_clip(handle: Any, index: int, comp_obj: Any,
                     if h.mob_class == "SourceMob" and h.mob_name:
                         mic_identity = h.mob_name
                         break
+
+        # Phase 7: per-clip operator info derived from the terminal
+        # SourceMob's descriptor. Best-effort — failures are silent
+        # and just leave fields None.
+        terminal_mob = _resolve_mob_by_id_str(handle, terminal.mob_id)
+        if terminal_mob is not None and type(terminal_mob).__name__ == "SourceMob":
+            desc = getattr(terminal_mob, "descriptor", None)
+            source_locators = _collect_locators(desc)
+            audio_info = _audio_descriptor_info(desc) or {}
+            audio_sr = audio_info.get("sample_rate")
+            audio_bps = audio_info.get("bits_per_sample")
+            audio_ch = audio_info.get("channels")
+            head_h, tail_h, head_s, tail_s = _compute_handles(
+                comp_obj, terminal_mob, terminal.slot_id,
+            )
     except ValueError:
         # walk_chain raises ValueError when the SourceClip points at a
         # mob not in this file. Surface that without aborting the listing.
@@ -412,6 +465,14 @@ def _build_source_clip_clip(handle: Any, index: int, comp_obj: Any,
         terminal_reason=terminal_reason,
         physical_track_number=ptn,
         chain_length=chain_length,
+        source_locators=source_locators,
+        head_handle_frames=head_h,
+        tail_handle_frames=tail_h,
+        head_handle_seconds=head_s,
+        tail_handle_seconds=tail_s,
+        audio_sample_rate=audio_sr,
+        audio_bits_per_sample=audio_bps,
+        audio_channels=audio_ch,
     )
 
 
@@ -630,6 +691,167 @@ class AudioSummary:
         return d
 
 
+# ---------- Phase 7: per-clip locator + handle helpers ----------
+
+
+def _locator_url(loc: Any) -> Optional[str]:
+    """Read the URL out of a NetworkLocator or TextLocator."""
+    cls = type(loc).__name__
+    try:
+        if cls == "NetworkLocator":
+            v = loc["URLString"].value
+            return v if isinstance(v, str) else None
+        if cls == "TextLocator":
+            v = loc["Name"].value
+            return v if isinstance(v, str) else None
+    except Exception:
+        return None
+    return None
+
+
+def _url_to_local_path(url: str) -> Optional[str]:
+    """
+    Best-effort URL -> local filesystem path conversion.
+
+    Handles:
+      - file:///path/to/file → /path/to/file
+      - bare /absolute/path → /absolute/path
+      - relative paths → None (we don't second-guess the working dir)
+      - urn:smpte:... → None (a UMID, not a path)
+      - other schemes (http, smb, ...) → None
+    """
+    if not url:
+        return None
+    if url.startswith("/"):
+        return url
+    parsed = urlparse(url)
+    # Only accept absolute file:// URLs. Bare relative paths (no scheme,
+    # no leading slash) are ambiguous without a working directory and
+    # we don't second-guess.
+    if parsed.scheme == "file":
+        path = unquote(parsed.path or "")
+        if not path:
+            return None
+        return path
+    return None
+
+
+def _is_online(url: str) -> Optional[bool]:
+    """
+    Local-only online check. None = unknown (non-local URL).
+    True = file://-resolvable path that exists on disk.
+    False = file://-resolvable path that doesn't exist.
+    """
+    local = _url_to_local_path(url)
+    if local is None:
+        return None
+    try:
+        return os.path.exists(local)
+    except OSError:
+        return False
+
+
+def _collect_locators(desc: Any) -> tuple:
+    """
+    Pull the Locator entries off a SourceMob descriptor and return
+    them as a tuple of {url, kind, online} dicts. Empty tuple if no
+    descriptor or no Locator property.
+    """
+    if desc is None:
+        return ()
+    try:
+        prop = desc["Locator"]
+    except Exception:
+        return ()
+    val = getattr(prop, "value", None)
+    if val is None:
+        return ()
+    out = []
+    for loc in val:
+        url = _locator_url(loc)
+        if not url:
+            continue
+        cls = type(loc).__name__
+        kind = "network" if cls == "NetworkLocator" else (
+            "text" if cls == "TextLocator" else cls
+        )
+        out.append({"url": url, "kind": kind, "online": _is_online(url)})
+    return tuple(out)
+
+
+def _resolve_mob_by_id_str(handle: Any, mob_id_str: Optional[str]) -> Optional[Any]:
+    """Look up a Mob by its URN/hex string. None on parse failure or
+    not-in-file. Wrapper around resolver._try_parse_mob_id +
+    handle.content.mobs.get."""
+    if not mob_id_str:
+        return None
+    parsed = resolver_mod._try_parse_mob_id(mob_id_str)
+    if parsed is None:
+        return None
+    try:
+        return handle.content.mobs.get(parsed, None)
+    except Exception:
+        return None
+
+
+def _compute_handles(
+    source_clip: Any, terminal_mob: Any, terminal_slot_id: Optional[int]
+) -> tuple:
+    """
+    Compute (head_frames, tail_frames, head_seconds, tail_seconds) for
+    a clip given its originating SourceClip and the terminal SourceMob.
+
+    head = the clip's offset INTO the terminal source (clip.start at
+    the second-to-last hop). For the typical 1-hop comp -> master ->
+    source case we approximate via the comp-level SourceClip's start
+    + length.
+    tail = source_slot_total_length - (start + length).
+
+    All in source edit-rate units. seconds variants populated only when
+    the source slot's edit_rate is known.
+    """
+    head_frames: Optional[int] = None
+    tail_frames: Optional[int] = None
+    head_seconds: Optional[float] = None
+    tail_seconds: Optional[float] = None
+
+    if source_clip is None or terminal_mob is None:
+        return (head_frames, tail_frames, head_seconds, tail_seconds)
+
+    start = getattr(source_clip, "start", None)
+    length = getattr(source_clip, "length", None)
+    if isinstance(start, int):
+        head_frames = int(start)
+
+    # Find the terminal slot to read its total length and edit rate.
+    fn = getattr(terminal_mob, "slot_at", None)
+    slot = None
+    if callable(fn) and terminal_slot_id is not None:
+        try:
+            slot = fn(terminal_slot_id)
+        except Exception:
+            slot = None
+    if slot is None:
+        return (head_frames, tail_frames, head_seconds, tail_seconds)
+
+    total_length = getattr(getattr(slot, "segment", None), "length", None)
+    if (
+        isinstance(total_length, int)
+        and isinstance(start, int)
+        and isinstance(length, int)
+    ):
+        tail_frames = int(total_length - (start + length))
+
+    rate = _rational_to_float(getattr(slot, "edit_rate", None))
+    if rate and rate > 0:
+        if head_frames is not None:
+            head_seconds = head_frames / rate
+        if tail_frames is not None:
+            tail_seconds = tail_frames / rate
+
+    return (head_frames, tail_frames, head_seconds, tail_seconds)
+
+
 def _build_audio_summary(handle: Any) -> AudioSummary:
     sample_rates: dict[str, int] = {}
     bit_depths: dict[int, int] = {}
@@ -823,14 +1045,51 @@ def list_clips(handle: Any, slot_id: int) -> list[Clip]:
         ln_raw = getattr(comp_obj, "length", None)
         length = int(ln_raw) if isinstance(ln_raw, int) else None
 
-        # Per-clip OperationGroup unwrap: an Avid clip is typically wrapped
-        # in an OperationGroup carrying audio-level automation. If we can
-        # peel a single SourceClip out, treat it as that SourceClip so
-        # the chain walk recovers the recorder identity.
+        # Per-clip OperationGroup handling:
+        #  - Single-input wrapper (Avid audio-level automation): peel
+        #    and treat as the inner SourceClip so the chain walk
+        #    recovers the recorder identity (Phase 6 behavior).
+        #  - Multi-input combiner (Avid mix-down, stereo bus, etc.):
+        #    Phase 7 fan-out. Build a top-level Clip with sub_clips
+        #    populated, one Clip per input. Top-level mic_identity is
+        #    None (no single answer); inputs each have their own.
         if cls == "OperationGroup":
             inner = _unwrap_operation_group(comp_obj)
             if inner is not None:
                 clip = _build_source_clip_clip(handle, i, inner, cursor, length)
+                out.append(clip)
+                if isinstance(ln_raw, int):
+                    cursor += ln_raw
+                continue
+            input_clips = chain_mod._operation_group_source_clip_inputs(comp_obj)
+            if len(input_clips) >= 2:
+                op_def = getattr(comp_obj, "operation", None)
+                op_name = getattr(op_def, "name", None) if op_def else None
+                sub_clips = tuple(
+                    _build_source_clip_clip(handle, j, inp, cursor,
+                                            int(getattr(inp, "length", 0))
+                                            if isinstance(getattr(inp, "length", None), int)
+                                            else None)
+                    for j, inp in enumerate(input_clips)
+                )
+                clip = Clip(
+                    index=i,
+                    component_class="OperationGroup",
+                    timeline_start=cursor,
+                    length=length,
+                    source_mob_id=None,
+                    source_mob_name=None,
+                    source_mob_slot_id=None,
+                    mic_identity=None,
+                    is_recorder_source=False,
+                    terminal_reason=(
+                        f"combiner:{op_name}" if isinstance(op_name, str)
+                        else "combiner"
+                    ),
+                    physical_track_number=None,
+                    chain_length=0,
+                    sub_clips=sub_clips,
+                )
                 out.append(clip)
                 if isinstance(ln_raw, int):
                     cursor += ln_raw
