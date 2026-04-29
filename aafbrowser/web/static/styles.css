@@ -676,6 +676,31 @@ body.view-cfb .view-cfb-only { display: flex; }
 .tree-row.kind-clip-recorder.selected { border-left-color: var(--accent); }
 .tree-row.kind-clip-other { color: var(--fg-muted); }
 
+/* Phase 8: recovery_status visual variants. unrecoverable clips
+   (e.g. Premiere polywav imports) get a faint red border-left so
+   the operator sees at a glance that the mic identity isn't
+   trustworthy. ambiguous gets a warm-yellow tint. */
+.tree-row.unrecoverable {
+  border-left-color: var(--error);
+  color: var(--fg-muted);
+}
+.tree-row.unrecoverable.selected { border-left-color: var(--accent); }
+.tree-row.ambiguous { border-left-color: var(--accent-warm); }
+.tree-row.ambiguous.selected { border-left-color: var(--accent); }
+
+/* Pan-channel suffix on track rows (Premiere stereo-split). */
+.track-row .track-pan {
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 2px;
+  background: var(--bg-elev-2);
+  color: var(--accent-warm);
+  border: 1px solid var(--accent-warm);
+  margin-left: 6px;
+  letter-spacing: 0.5px;
+}
+
 .tree-children {
   margin-left: 16px;
   border-left: 1px dotted var(--border);

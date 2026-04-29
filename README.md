@@ -14,7 +14,8 @@ the briefs at [docs/phase1-brief.md](docs/phase1-brief.md) (CLI),
 [docs/phase4-brief.md](docs/phase4-brief.md) (macOS app + native file picker),
 [docs/phase5-brief.md](docs/phase5-brief.md) (embedded WKWebView),
 [docs/phase6-brief.md](docs/phase6-brief.md) (operator-first browser layer),
-and [docs/phase7-brief.md](docs/phase7-brief.md) (deeper recovery + per-clip info + Sources pull list).
+[docs/phase7-brief.md](docs/phase7-brief.md) (deeper recovery + per-clip info + Sources pull list),
+and [docs/phase8-brief.md](docs/phase8-brief.md) (Premiere-aware recovery).
 
 ## Install — macOS app (recommended)
 
@@ -186,6 +187,16 @@ What the GUI does:
   when its source file path doesn't exist on disk. Multi-input
   combiner clips (e.g. an Avid mix-down of two mics) expand into
   one sub-clip per input, each with its own recovered identity.
+- Format-aware recovery (Phase 8): the inspector exposes a
+  `recovery_status` per clip — **recoverable** for normal Avid
+  chain-walks, Premiere stereo splits (Mono Audio Pan) and
+  combiners whose inputs all resolve; **ambiguous** for
+  partial-information cases; **unrecoverable** for Premiere
+  multichannel polywav imports (channel index destroyed at import)
+  and broken/non-source terminals. Unrecoverable clips get a faint
+  red border-left in the tree so the operator sees at a glance
+  that the mic name shouldn't be trusted. Premiere stereo-split
+  tracks get an `L`/`R` pill next to the track name.
 - Click a MobID badge anywhere in the inspector to jump to that Mob in
   the list (works across StrongRefVector members and scalar MobID
   values).

@@ -1794,6 +1794,19 @@ function renderTrackList() {
   }
 
   for (const t of tracks) {
+    const nameNode = el(
+      "span",
+      { class: "track-name" + (t.name ? "" : " untitled") },
+      t.name || t._positional
+    );
+    if (t.pan_channel) {
+      // Premiere stereo-split tag: "L" / "R" pill next to the name.
+      nameNode.appendChild(
+        el("span", { class: "track-pan",
+                     title: `Premiere stereo split (Pan = ${t.pan_channel})` },
+          t.pan_channel)
+      );
+    }
     const row = el(
       "div",
       {
@@ -1805,11 +1818,7 @@ function renderTrackList() {
       [
         el("span", { class: "track-ordinal" }, String(t.ordinal)),
         el("span", { class: "track-kind-tag" }, t.kind),
-        (() => {
-          const n = el("span", { class: "track-name" + (t.name ? "" : " untitled") },
-            t.name || t._positional);
-          return n;
-        })(),
+        nameNode,
         el(
           "span",
           { class: "track-meta muted" },
@@ -1896,13 +1905,19 @@ function buildClipNode(clip) {
   const hasSubClips = Array.isArray(clip.sub_clips) && clip.sub_clips.length > 0;
   const expandable = hasSubClips ||
     (clip.component_class === "SourceClip" && !!clip.source_mob_id);
+  // Phase 8 visual variant: recovery_status drives an additional class
+  // on top of the recorder/other classification.
+  const baseClass = clip.is_recorder_source
+    ? "kind-clip-recorder"
+    : (clip.component_class === "SourceClip" ? "" : "kind-clip-other");
+  const recoveryClass = clip.recovery_status === "unrecoverable"
+    ? "unrecoverable"
+    : (clip.recovery_status === "ambiguous" ? "ambiguous" : "");
   return {
     id,
     kind: "clip",
     data: clip,
-    rowClass: clip.is_recorder_source
-      ? "kind-clip-recorder"
-      : (clip.component_class === "SourceClip" ? "" : "kind-clip-other"),
+    rowClass: [baseClass, recoveryClass].filter(Boolean).join(" "),
     expandable,
     renderRow: () => renderClipRowContent(clip),
     fetchKids: async () => {
@@ -1913,14 +1928,17 @@ function buildClipNode(clip) {
         return clip.sub_clips.map((sub, i) => {
           const subId = `${id}/sub${i}`;
           const subHasKids = sub.component_class === "SourceClip" && !!sub.source_mob_id;
+          const subRecovery = sub.recovery_status === "unrecoverable"
+            ? "unrecoverable"
+            : (sub.recovery_status === "ambiguous" ? "ambiguous" : "");
           return {
             id: subId,
             kind: "clip",
             data: sub,
-            rowClass: (sub.is_recorder_source
+            rowClass: [(sub.is_recorder_source
               ? "kind-clip-recorder"
-              : (sub.component_class === "SourceClip" ? "" : "kind-clip-other"))
-              + " sub-clip",
+              : (sub.component_class === "SourceClip" ? "" : "kind-clip-other")),
+              subRecovery, "sub-clip"].filter(Boolean).join(" "),
             expandable: subHasKids,
             renderRow: () => renderClipRowContent(sub),
             fetchKids: async () => {
@@ -2364,6 +2382,16 @@ function operatorSummaryFor(clip) {
   // Sub-clips (multi-input combiner) summary
   if (clip.sub_clips && clip.sub_clips.length > 0) {
     row("Combiner inputs", clip.sub_clips.length);
+  }
+
+  // Phase 8: format-aware recovery status. Color the value when
+  // unrecoverable/ambiguous so the operator notices.
+  if (clip.recovery_status) {
+    const cls = clip.recovery_status === "recoverable" ? "mic"
+              : clip.recovery_status === "unrecoverable" ? "muted"
+              : "muted";
+    row("Recovery", clip.recovery_status, cls);
+    if (clip.recovery_method) row("Recovery method", clip.recovery_method);
   }
 
   return el("section", { class: "operator-summary" }, [
