@@ -4,7 +4,7 @@ from __future__ import annotations
 import aaf2
 import pytest
 
-from aafbrowser.core.chain import Hop, walk_chain
+from aafbrowser.core.chain import Hop, HopBranch, walk_chain, walk_chain_tree
 
 
 def _comp_mob(handle):
@@ -150,3 +150,114 @@ def test_walk_chain_from_source_clip(chain_aaf):
         hops = walk_chain(f, clip)
     # Starts at the MasterMob (the clip's target), descends to SourceMob
     assert [h.mob_class for h in hops] == ["MasterMob", "SourceMob"]
+
+
+# ---------- walk_chain_tree (Phase 7 multi-input combiner recursion) ----------
+
+
+def _comp_by_name(handle, name):
+    for m in handle.content.mobs:
+        if type(m).__name__ == "CompositionMob" and getattr(m, "name", None) == name:
+            return m
+    raise AssertionError(f"no CompositionMob named {name!r}")
+
+
+def test_walk_chain_tree_matches_walk_chain_for_flat_chain(chain_aaf):
+    """On a single-input chain, walk_chain_tree returns the same flat
+    list of Hops as walk_chain (no HopBranch nodes)."""
+    with aaf2.open(str(chain_aaf), "r") as f:
+        comp = _comp_mob(f)
+        flat = walk_chain(f, comp)
+        tree = walk_chain_tree(f, comp)
+    assert len(tree) == len(flat)
+    for t, h in zip(tree, flat):
+        assert isinstance(t, Hop)
+        assert t.mob_class == h.mob_class
+        assert t.terminal == h.terminal
+        assert t.terminal_reason == h.terminal_reason
+
+
+def test_walk_chain_tree_branches_on_multi_input_combiner(combiner_aaf):
+    """Walking from a composition mob whose chain hits a multi-input
+    OperationGroup mid-chain produces a HopBranch with one sub-chain
+    per input. Each input recovers its own leaf SourceMob."""
+    with aaf2.open(str(combiner_aaf), "r") as f:
+        comp = _comp_by_name(f, "CombMidComp")
+        tree = walk_chain_tree(f, comp)
+    # First node = the comp itself (single-clip step into the master)
+    # Second node = HopBranch (the master's slot.segment is the OG)
+    assert len(tree) == 2
+    assert isinstance(tree[0], Hop)
+    assert tree[0].mob_class == "CompositionMob"
+    branch = tree[1]
+    assert isinstance(branch, HopBranch)
+    assert branch.combiner_class == "OperationGroup"
+    assert branch.operation_def_name == "TestStereoMix"
+    assert branch.mob_class == "MasterMob"
+    assert branch.mob_name == "CombMidMaster"
+    # Two inputs, each a 2-hop chain (MasterMob -> SourceMob).
+    assert len(branch.inputs) == 2
+    for sub_chain in branch.inputs:
+        assert len(sub_chain) == 2
+        assert sub_chain[0].mob_class == "MasterMob"
+        assert sub_chain[1].mob_class == "SourceMob"
+        assert sub_chain[1].terminal is True
+    # Recovered identities: input[0] -> CombSrcA (PTN 1), input[1] -> CombSrcB (PTN 2).
+    assert branch.inputs[0][1].mob_name == "CombSrcA"
+    assert branch.inputs[0][1].physical_track_number == 1
+    assert branch.inputs[1][1].mob_name == "CombSrcB"
+    assert branch.inputs[1][1].physical_track_number == 2
+
+
+def test_walk_chain_tree_to_dict_round_trips(combiner_aaf):
+    """HopBranch.to_dict carries _type marker and recursive inputs."""
+    with aaf2.open(str(combiner_aaf), "r") as f:
+        tree = walk_chain_tree(f, _comp_by_name(f, "CombMidComp"))
+    branch = tree[1]
+    d = branch.to_dict()
+    assert d["_type"] == "hop_branch"
+    assert d["combiner_class"] == "OperationGroup"
+    assert d["operation_def_name"] == "TestStereoMix"
+    assert len(d["inputs"]) == 2
+    assert all(len(chain) == 2 for chain in d["inputs"])
+    # Each leaf hop in each sub-chain is a Hop dict
+    for chain in d["inputs"]:
+        for hop_dict in chain:
+            assert isinstance(hop_dict, dict)
+            # Hop.to_dict has these keys (from Phase 3)
+            assert "mob_class" in hop_dict
+            assert "terminal" in hop_dict
+
+
+def test_walk_chain_tree_max_depth_clipped(combiner_aaf):
+    """max_depth=0 disables branching: a multi-input combiner becomes
+    a normal terminal Hop with reason 'operation_group'."""
+    with aaf2.open(str(combiner_aaf), "r") as f:
+        tree = walk_chain_tree(f, _comp_by_name(f, "CombMidComp"), max_depth=0)
+    # No HopBranch nodes
+    assert all(isinstance(n, Hop) for n in tree)
+    assert tree[-1].terminal is True
+    assert tree[-1].terminal_reason == "operation_group"
+
+
+def test_walk_chain_tree_cycle_safe(cycle_aaf):
+    """The shared visited set prevents infinite recursion through cycles."""
+    with aaf2.open(str(cycle_aaf), "r") as f:
+        a = next(iter(f.content.mobs))
+        tree = walk_chain_tree(f, a)
+    assert all(isinstance(n, Hop) for n in tree)
+    assert tree[-1].terminal is True
+    assert tree[-1].terminal_reason == "cycle"
+
+
+def test_walk_chain_tree_max_combiner_inputs_reports_truncation(combiner_aaf):
+    """max_combiner_inputs=1 keeps only the first input and reports the
+    rest as truncated."""
+    with aaf2.open(str(combiner_aaf), "r") as f:
+        tree = walk_chain_tree(
+            f, _comp_by_name(f, "CombMidComp"), max_combiner_inputs=1
+        )
+    branch = tree[-1]
+    assert isinstance(branch, HopBranch)
+    assert len(branch.inputs) == 1
+    assert branch.truncated_input_count == 1

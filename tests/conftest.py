@@ -157,6 +157,110 @@ def _write_multi_track_aaf(path: Path) -> None:
         v.segment.length = 100
 
 
+def _write_combiner_aaf(path: Path) -> None:
+    """
+    A CompositionMob with one audio slot containing two components:
+      [0] A plain SourceClip pointing at MstC (control case).
+      [1] An OperationGroup combining SourceClips → MstA + MstB
+          (multi-input combiner — Phase 7's tree walk recursion target).
+
+    Each SourceMob has a distinct PhysicalTrackNumber (1, 2, 3) so the
+    chain-walk tests can assert per-input recovery on the combiner.
+
+    Constructing OperationGroups in pyaaf2 requires registering an
+    OperationDef in the dictionary first; that's done inline here.
+    """
+    from aaf2.auid import AUID
+
+    with aaf2.open(str(path), "w") as f:
+        # Custom 2-input audio mix OperationDef (synthetic AUID; doesn't
+        # need to match a real AAF spec — only needs to be unique).
+        od_auid = AUID("aaf12345-0000-0000-0000-000000000002")
+        op_def = f.create.OperationDef(od_auid, "TestStereoMix",
+                                        "2-input audio mix (test fixture)")
+        op_def.media_kind = "Sound"
+        op_def["NumberInputs"].value = 2
+        f.dictionary.register_def(op_def)
+
+        # Three SourceMobs, each on a distinct recorder PTN.
+        sources = []
+        for i, name in enumerate(("CombSrcA", "CombSrcB", "CombSrcC"), start=1):
+            sm = f.create.SourceMob(name)
+            f.content.mobs.append(sm)
+            sm.descriptor = f.create.ImportDescriptor()
+            s = sm.create_sound_slot(edit_rate=48000)
+            s["PhysicalTrackNumber"].value = i
+            sources.append((sm, s))
+
+        # MasterMob per source.
+        masters = []
+        for (sm, s_slot), name in zip(sources, ("CombMstA", "CombMstB", "CombMstC")):
+            mm = f.create.MasterMob(name)
+            f.content.mobs.append(mm)
+            mslot = mm.create_sound_slot(edit_rate=48000)
+            mslot.segment.components.append(f.create.SourceClip(
+                start=0, length=24000,
+                mob_id=sm.mob_id, slot_id=s_slot.slot_id,
+            ))
+            masters.append((mm, mslot))
+
+        # CompositionMob with two clips: a control SourceClip and a
+        # multi-input OperationGroup at the top level (slot.segment is
+        # a Sequence containing both).
+        comp = f.create.CompositionMob("CombinerComp")
+        f.content.mobs.append(comp)
+        slot = comp.create_sound_slot(edit_rate=48000)
+        slot["PhysicalTrackNumber"].value = 1
+
+        # Component [0]: plain SourceClip → CombMstC
+        slot.segment.components.append(f.create.SourceClip(
+            start=0, length=24000,
+            mob_id=masters[2][0].mob_id, slot_id=masters[2][1].slot_id,
+        ))
+
+        # Component [1]: OperationGroup combining CombMstA + CombMstB
+        og = f.create.OperationGroup(op_def)
+        og.length = 24000
+        og["InputSegments"].value = [
+            f.create.SourceClip(start=0, length=24000,
+                                mob_id=masters[0][0].mob_id,
+                                slot_id=masters[0][1].slot_id),
+            f.create.SourceClip(start=0, length=24000,
+                                mob_id=masters[1][0].mob_id,
+                                slot_id=masters[1][1].slot_id),
+        ]
+        slot.segment.components.append(og)
+
+        # Second comp mob: a chain that hits a multi-input OperationGroup
+        # MID-CHAIN (not at the top level). Used to exercise walk_chain_tree's
+        # in-loop branching: walking from this comp mob → goes through a
+        # SourceClip → lands on a MasterMob whose slot's segment IS the
+        # multi-input OG → chain forks.
+        mid_master = f.create.MasterMob("CombMidMaster")
+        f.content.mobs.append(mid_master)
+        mid_slot = mid_master.create_sound_slot(edit_rate=48000)
+        mid_combiner = f.create.OperationGroup(op_def)
+        mid_combiner.length = 24000
+        mid_combiner["InputSegments"].value = [
+            f.create.SourceClip(start=0, length=24000,
+                                mob_id=masters[0][0].mob_id,
+                                slot_id=masters[0][1].slot_id),
+            f.create.SourceClip(start=0, length=24000,
+                                mob_id=masters[1][0].mob_id,
+                                slot_id=masters[1][1].slot_id),
+        ]
+        mid_slot.segment = mid_combiner
+
+        comp2 = f.create.CompositionMob("CombMidComp")
+        f.content.mobs.append(comp2)
+        comp2_slot = comp2.create_sound_slot(edit_rate=48000)
+        comp2_slot["PhysicalTrackNumber"].value = 1
+        comp2_slot.segment.components.append(f.create.SourceClip(
+            start=0, length=24000,
+            mob_id=mid_master.mob_id, slot_id=mid_slot.slot_id,
+        ))
+
+
 def _write_broken_ref_aaf(path: Path) -> None:
     """A MasterMob whose SourceClip references a MobID that's not in the file."""
     from aaf2.mobid import MobID
@@ -201,6 +305,13 @@ def chain_aaf(fixture_dir: Path) -> Path:
 def multi_track_aaf(fixture_dir: Path) -> Path:
     p = fixture_dir / "multi_track.aaf"
     _write_multi_track_aaf(p)
+    return p
+
+
+@pytest.fixture(scope="session")
+def combiner_aaf(fixture_dir: Path) -> Path:
+    p = fixture_dir / "combiner.aaf"
+    _write_combiner_aaf(p)
     return p
 
 
