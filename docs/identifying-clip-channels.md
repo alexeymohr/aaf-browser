@@ -88,7 +88,7 @@ source mobs. Validated workflow classes from the corpus run:
 | Avid Media Composer, scripted episodic | yes | Per-actor lavs/booms come out clean (TBAS validation). |
 | Avid Media Composer with PT inserts (promos, music beds) | yes, with filter | Inserted assets terminate at non-recorder mobs; filter on terminal mob class + PTN > 0. |
 | Premiere Pro picture lock — stereo splits | partial | `_L`/`_R` channel identity recoverable via `Mono Audio Pan` parameter (0.0 vs 1.0); see `docs/premiere-aaf-channel-recovery.md`. |
-| Premiere Pro picture lock — multichannel polywav | **no** | Channel index is destroyed at import; siblings share name/descriptor/timestamps. Only mob_id differs, with no channel encoding. Use track-placement convention as a best-effort fallback. |
+| Premiere Pro picture lock — multichannel polywav | **no (verified)** | Channel index is destroyed at import; siblings share name/descriptor/timestamps. Only mob_id differs, with no channel encoding. Verified independently by pyaaf2 and LibAAF — the destruction is on the AAF write side, not a parser limitation. Use the audio-content fallback below. |
 | Pro Tools transit / template AAFs | n/a | Blank tracks — no clips to walk. |
 
 Cheap signals to detect "method does not apply" early:
@@ -509,6 +509,85 @@ to one winner. The `(camera_mob_id, PTN)` per-clip-take fingerprint
 already does the right thing; just don't aggregate to "this label =
 this single PTN" without checking.
 
+## When the AAF carries no channel info — audio-content fallback
+
+For Premiere multichannel polywav AAFs, the chain-walk method
+correctly returns nothing because nothing is there to return —
+verified independently by pyaaf2 and LibAAF on a real 8-channel
+multicam game-show AAF (see
+`docs/premiere-aaf-channel-recovery.md` and
+`docs/tpir-aaf-test-findings.md`).
+
+But the audio essence streams themselves still carry signal. A
+deterministic, ML-free fallback gets you most of what you need:
+
+### Step 1 — Extract per-channel essence to disk
+
+Pyaaf2 exposes embedded essence via `f.content.essencedata`. For each
+SourceMob with a populated EssenceData stream, read the RIFF/WAVE
+bytes (or AIFC, depending on Premiere version) and write to `.wav`.
+
+The 1:1 mapping `(timeline_track → MasterMob → mid SourceMob →
+EssenceData)` is preserved by the chain-walk; you already know which
+essence belongs to which track.
+
+### Step 2 — Compute per-channel statistics
+
+For each extracted stream, compute over 1-second windows:
+
+- Peak (dBFS), RMS (dBFS), and silent-window fraction
+- Spectral centroid + roll-off (lav vs boom vs ambient have
+  characteristic spectra)
+- Voice-activity ratio (cheap VAD like Silero or WebRTC)
+
+These already separate audience/ambient channels (low level, high
+silence%) from dialog channels (high level, sparse silence) without
+any model.
+
+### Step 3 — Pairwise correlation of RMS envelopes
+
+Pearson-correlate every channel's 1-second RMS envelope against every
+other channel's. Tight pairs (correlation > 0.95) indicate
+stereo-like pairings — boom L/R, audience L/R, music bed L/R, etc.
+This is independent of ML and very fast.
+
+Validated on TPIR (8 mono tracks from one source): the matrix
+revealed 4 clean stereo pairs `{1,2} {3,4} {5,6} {7,8}` with
+correlations 0.997, 0.997, 0.973, 0.995. The {7,8} pair was 13 dB
+quieter and 3× more silent — unambiguously the audience pair.
+
+### Step 4 — Optional audio-event tagging (light ML)
+
+Run YAMNet or PANNs in 1-second windows over each channel; aggregate
+top-class probabilities. Output classes include `Speech`, `Male
+speech`, `Female speech`, `Applause`, `Cheering`, `Crowd`,
+`Laughter`, `Music`, `Singing` — directly mapping to the functional
+roles TrackManager wants to surface. ~4 MB CNN, runs on CPU in
+real-time, no per-show training needed.
+
+This works on ANY multichannel polywav case where the AAF gives you
+nothing — including TPIR, CasaLuxe, and SavingJones.
+
+### What this fallback gets you
+
+- **Pair structure**: deterministic, always.
+- **Functional class** (dialog / audience / music / silent backup):
+  deterministic from levels + silence; ML-confirmed via tags.
+- **Specific role identification** (host vs contestant 1 vs
+  cohost): requires either Whisper+LLM, voice biometrics, or
+  human confirmation.
+- **Source-channel-of-N index** (which channel of the original
+  polywav is on Audio 3): not recoverable from any AAF-level signal
+  for this workflow class. Only audio-content correlation against
+  the original polywav file gives you this — out of scope for
+  AAF-only tooling.
+
+The `(timeline_track, master_mob_id, essence_stream)` fingerprint
+plus the audio-content classification together let TrackManager
+emit useful per-channel labels even when the chain-walk method
+returns null. For a TrackManager-style consumer this is the
+"Premiere fallback path" that completes the picture.
+
 ## Edge cases to surface as warnings, not silent drops
 
 - `terminal_reason == "broken_ref"` — the chain points to a Mob not in
@@ -593,11 +672,18 @@ Full report: `docs/channel-method-corpus-validation.md`. Headlines:
   CamMic recorded to channels 3 AND 4), real production reracks
   across episodes.
 
-- **Premiere AAFs (CasaLuxe, SavingJones).** All recovered PTNs are 0
-  / null — the upstream chain has no PhysicalTrackNumber. Method
-  correctly returns "no answer" rather than fabricating one. Detect
-  via the cheap signals listed under "Range of applicability" and use
-  a filename-based fallback.
+- **Premiere AAFs (CasaLuxe, SavingJones, TPIR_AAF_Test1).** All
+  recovered PTNs are 0 / null — the upstream chain has no
+  PhysicalTrackNumber. Method correctly returns "no answer" rather
+  than fabricating one. **The "no answer" is independently confirmed
+  by LibAAF**: running aaftool with `--aaf-properties --trace
+  --cfb-nodes --aaf-classes` on TPIR (8-channel multicam game show)
+  surfaces no field, descriptor, sub-descriptor, tagged value, class,
+  or CFB stream that pyaaf2 misses. The destruction is on the AAF
+  write side, not a parser limitation. Detect Premiere via the cheap
+  signals under "Range of applicability" and route to either the
+  stereo-split recovery path (Mono Audio Pan parameter) or the
+  audio-content fallback (above).
 
 The Phase-3 production-test on Password 310 was not a fluke. It was
 representative.
