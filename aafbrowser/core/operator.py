@@ -159,16 +159,19 @@ def _track_pan_channel(segment: Any) -> Optional[str]:
     """
     Premiere stereo-split detection (Phase 8).
 
-    If `segment` is a Mono Audio Pan OperationGroup carrying a
-    ConstantValue parameter at the LEFT (≈0.0) or RIGHT (≈1.0)
-    extreme, return "L" or "R". Returns None for any other segment
-    shape, any non-Pan operation, missing parameters, or a pan
+    If `segment` is a "Mono Audio Pan" OperationGroup carrying a
+    ConstantValue AAFRational parameter at the LEFT (≈0.0) or
+    RIGHT (≈1.0) extreme, return "L" or "R". Returns None for any
+    other segment shape, any non-Mono-Audio-Pan operation, or a pan
     position other than hard L/R.
 
-    Avid AAFs don't carry Mono Audio Pan at the slot level (they use
-    Audio Gain + InputSegments=[Sequence] for the track wrapper),
-    so this returns None on Avid sessions and the rest of the
-    operator code stays untouched.
+    Restricted to OPERATION NAME == "Mono Audio Pan" exactly (the
+    Premiere operation per docs/premiere-aaf-channel-recovery.md).
+    Avid uses a different operation called "Audio Pan" (note: no
+    "Mono") that carries different parameter shapes; matching the
+    full name avoids false positives. Required parameter must be a
+    ConstantValue wrapping an AAFRational with a num/den ratio in
+    {≈0.0, ≈1.0}.
     """
     if segment is None:
         return None
@@ -176,19 +179,27 @@ def _track_pan_channel(segment: Any) -> Optional[str]:
         return None
     op_def = getattr(segment, "operation", None)
     op_name = getattr(op_def, "name", None) if op_def else None
-    if not isinstance(op_name, str) or "pan" not in op_name.lower():
+    if op_name != "Mono Audio Pan":
         return None
     try:
         params = list(getattr(segment, "parameters", None) or [])
     except Exception:
         return None
     for param in params:
+        # Only ConstantValue parameters are eligible — VaryingValue
+        # carries automation that we don't reduce to a single
+        # channel. AAFRational required.
+        if type(param).__name__ != "ConstantValue":
+            continue
         v = getattr(param, "value", None)
         if v is None:
             continue
+        # Must be an AAFRational (not a bare Python int / str).
+        if type(v).__name__ != "AAFRational":
+            continue
         num = getattr(v, "numerator", None)
         den = getattr(v, "denominator", None)
-        if num is None or den is None or int(den) == 0:
+        if not isinstance(num, int) or not isinstance(den, int) or den == 0:
             continue
         ratio = float(num) / float(den)
         if ratio < 0.1:

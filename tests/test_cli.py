@@ -253,3 +253,100 @@ def test_find_class_filter_repeatable(chain_aaf):
         if line
     }
     assert "SourceMob" not in classnames
+
+
+# ---------- Phase 9: operator-layer CLI commands ----------
+
+
+def test_session_human(chain_aaf):
+    res = _run("session", str(chain_aaf))
+    assert res.exit_code == 0, res.output
+    assert "composition:" in res.output
+    assert "tracks:" in res.output
+    assert "clips:" in res.output
+
+
+def test_session_json(chain_aaf):
+    res = _run("session", str(chain_aaf), "--json")
+    assert res.exit_code == 0
+    j = json.loads(res.output)
+    assert j["session"]["_type"] == "operator_session_summary"
+    assert "audio_track_count" in j["session"]
+    assert j["sha256"]
+
+
+def test_tracks_human(multi_track_aaf):
+    res = _run("tracks", str(multi_track_aaf))
+    assert res.exit_code == 0, res.output
+    # PT-style A1/A2/V1 ordinals + named tracks
+    assert "A1" in res.output
+    assert "V1" in res.output
+    assert "audio" in res.output
+    assert "video" in res.output
+
+
+def test_tracks_json(multi_track_aaf):
+    res = _run("tracks", str(multi_track_aaf), "--json")
+    j = json.loads(res.output)
+    assert "tracks" in j
+    kinds = [t["kind"] for t in j["tracks"]]
+    assert kinds == ["audio", "audio", "video"]
+
+
+def test_clips_human(multi_track_aaf):
+    res = _run("clips", str(multi_track_aaf), "--slot", "1")
+    assert res.exit_code == 0
+    assert "slot 1:" in res.output
+    assert "SrcA" in res.output  # mic identity in [brackets]
+
+
+def test_clips_json(multi_track_aaf):
+    res = _run("clips", str(multi_track_aaf), "--slot", "1", "--json")
+    j = json.loads(res.output)
+    assert j["slot_id"] == 1
+    assert all(c["_type"] == "operator_clip" for c in j["clips"])
+
+
+def test_clips_unknown_slot_errors(multi_track_aaf):
+    res = _run("clips", str(multi_track_aaf), "--slot", "99")
+    assert res.exit_code != 0
+    assert "no slot" in res.output.lower()
+
+
+def test_sources_human(combiner_aaf):
+    res = _run("sources", str(combiner_aaf))
+    assert res.exit_code == 0
+    assert "CombSrcA" in res.output
+    assert "used=" in res.output
+
+
+def test_sources_json(combiner_aaf):
+    res = _run("sources", str(combiner_aaf), "--json")
+    j = json.loads(res.output)
+    assert j["sources"]
+    names = {s["name"] for s in j["sources"] if s.get("name")}
+    assert {"CombSrcA", "CombSrcB", "CombSrcC"}.issubset(names)
+
+
+def test_sources_unused_flag(combiner_aaf):
+    """combiner_aaf may have unused-by-comp source mobs (CombMidMaster,
+    CombMidComp). Default skips unused (use_count=0), --unused includes
+    them."""
+    default = _run("sources", str(combiner_aaf), "--json")
+    with_unused = _run("sources", str(combiner_aaf), "--json", "--unused")
+    j_def = json.loads(default.output)
+    j_all = json.loads(with_unused.output)
+    assert j_all["total"] >= j_def["total"]
+
+
+def test_premiere_stereo_split_clips_show_pan(premiere_stereo_split_aaf):
+    """Phase 8 path through the CLI: track-row pan_channel + clip
+    recovery_method should be visible."""
+    tres = _run("tracks", str(premiere_stereo_split_aaf))
+    assert tres.exit_code == 0
+    # The L/R pan pill is rendered as "[L]" / "[R]" in the CLI
+    assert "[L]" in tres.output
+    assert "[R]" in tres.output
+    cres = _run("clips", str(premiere_stereo_split_aaf), "--slot", "1", "--json")
+    j = json.loads(cres.output)
+    assert j["clips"][0]["recovery_method"].startswith("premiere_stereo_split")

@@ -22,6 +22,7 @@ import click
 from aafbrowser.core import aaf as aaf_walker
 from aafbrowser.core import cfb as cfb_walker
 from aafbrowser.core import chain as chain_mod
+from aafbrowser.core import operator as operator_mod
 from aafbrowser.core import resolver as resolver_mod
 from aafbrowser.core.serialize import DEFAULT_BYTES_PREVIEW_LIMIT
 
@@ -471,6 +472,234 @@ def web(aaf_path: Optional[str], host: str, port: int, no_browser: bool) -> None
         server.server_close()
         with state_mod.state_lock():
             state_mod.close_file()
+
+
+# --- Phase 9: operator-layer CLI commands -----------------------------------
+
+
+def _file_size(path: str) -> int:
+    try:
+        return Path(path).stat().st_size
+    except OSError:
+        return 0
+
+
+def _emit_envelope(aaf_path: str, sha: str, payload_key: str, payload) -> None:
+    """JSON envelope for the operator CLI commands. Mirrors the shape
+    of the corresponding /api/... endpoint, with file + sha at the top."""
+    click.echo(json.dumps({
+        "file": str(Path(aaf_path).resolve()),
+        "sha256": sha,
+        payload_key: payload,
+    }, indent=2, ensure_ascii=False))
+
+
+@cli.command()
+@click.argument("aaf_path", type=click.Path(exists=True, dir_okay=False, readable=True))
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def session(aaf_path: str, as_json: bool) -> None:
+    """Headline summary of an AAF: composition, track + clip + mob counts,
+    audio specs, timecode, authoring, duration. Mirrors /api/session."""
+    sha = _file_sha256(aaf_path)
+    size = _file_size(aaf_path)
+    with _open_readonly(aaf_path) as f:
+        summary = operator_mod.session_summary(f, file_size_bytes=size)
+
+    if as_json:
+        _emit_envelope(aaf_path, sha, "session", summary.to_dict())
+        return
+
+    s = summary
+    click.echo(f"file: {Path(aaf_path).resolve()}")
+    click.echo(f"sha256: {sha}")
+    click.echo("")
+    click.echo(f"composition: {s.topmost_composition_name or '(none)'}")
+    click.echo(f"  mob counts: comp={s.composition_mob_count} master={s.master_mob_count} source={s.source_mob_count}")
+    click.echo(f"tracks: {s.audio_track_count} audio · {s.video_track_count} video"
+               + (f" · {s.timecode_track_count} timecode" if s.timecode_track_count else ""))
+    click.echo(f"clips: {s.total_clip_count} total")
+    if s.timecode is not None:
+        tc = s.timecode
+        click.echo(f"timecode: rate={tc.edit_rate} fps={tc.fps_nominal} drop={tc.drop}"
+                   f" start={tc.start_timecode} (frame {tc.start_frames})")
+    if s.duration_timecode or s.duration_seconds is not None:
+        secs = (f"{s.duration_seconds:.3f}s" if s.duration_seconds is not None else "")
+        click.echo(f"duration: {s.duration_timecode or '—'} ({secs})")
+    if s.authoring is not None:
+        a = s.authoring
+        click.echo(f"authored by: {a.product_name or '(unknown)'}"
+                   + (f" · {a.platform}" if a.platform else "")
+                   + (f" · kind={a.kind}" if a.kind else ""))
+    if s.last_modified:
+        click.echo(f"modified: {s.last_modified}")
+    if s.audio is not None and s.audio.audio_source_count > 0:
+        au = s.audio
+        click.echo(f"audio sources: {au.audio_source_count}"
+                   f" · rates={dict(au.sample_rates)}"
+                   f" · bits={dict(au.bit_depths)}"
+                   f" · channels={dict(au.channel_counts)}")
+
+
+@cli.command()
+@click.argument("aaf_path", type=click.Path(exists=True, dir_okay=False, readable=True))
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def tracks(aaf_path: str, as_json: bool) -> None:
+    """Audio + video tracks on the topmost CompositionMob. Each row carries
+    PT-style positional + slot id + clip count. Mirrors /api/tracks."""
+    sha = _file_sha256(aaf_path)
+    with _open_readonly(aaf_path) as f:
+        ts = operator_mod.list_tracks(f)
+        comp = operator_mod.pick_topmost_composition(f)
+        comp_meta = None
+        if comp is not None:
+            nm = getattr(comp, "name", None)
+            comp_meta = {
+                "mob_id": str(getattr(comp, "mob_id", "")) or None,
+                "name": nm if isinstance(nm, str) else None,
+            }
+        tc_dict = None
+        if comp is not None:
+            tc = operator_mod._build_timecode_info(comp)
+            if tc is not None:
+                tc_dict = tc.to_dict()
+
+    if as_json:
+        click.echo(json.dumps({
+            "file": str(Path(aaf_path).resolve()),
+            "sha256": sha,
+            "topmost_composition": comp_meta,
+            "timecode": tc_dict,
+            "tracks": [t.to_dict() for t in ts],
+        }, indent=2, ensure_ascii=False))
+        return
+
+    click.echo(f"file: {Path(aaf_path).resolve()}")
+    click.echo(f"sha256: {sha}")
+    click.echo(f"topmost: {(comp_meta or {}).get('name') or '(none)'}")
+    click.echo(f"{len(ts)} track{'' if len(ts) == 1 else 's'}")
+    click.echo("")
+    # Per-kind sequential index, mirrors the frontend's A1/V1 labels.
+    audio_idx = 0
+    video_idx = 0
+    for t in ts:
+        if t.kind == "audio":
+            audio_idx += 1
+            pos = f"A{audio_idx}"
+        elif t.kind == "video":
+            video_idx += 1
+            pos = f"V{video_idx}"
+        else:
+            pos = f"slot {t.slot_id}"
+        name = t.name or pos
+        pan = f" [{t.pan_channel}]" if t.pan_channel else ""
+        click.echo(
+            f"  {pos:<5} slot={t.slot_id:<4} kind={t.kind:<5}"
+            f" clips={t.clip_count:<5} {name}{pan}"
+        )
+
+
+@cli.command()
+@click.argument("aaf_path", type=click.Path(exists=True, dir_okay=False, readable=True))
+@click.option("--slot", type=int, required=True,
+              help="Topmost-composition slot id to enumerate clips on.")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def clips(aaf_path: str, slot: int, as_json: bool) -> None:
+    """Clips on a single track: timeline TC, length, mic identity,
+    recovery_status. Mirrors /api/track/clips."""
+    sha = _file_sha256(aaf_path)
+    with _open_readonly(aaf_path) as f:
+        try:
+            cs = operator_mod.list_clips(f, slot)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+
+    if as_json:
+        click.echo(json.dumps({
+            "file": str(Path(aaf_path).resolve()),
+            "sha256": sha,
+            "slot_id": slot,
+            "clips": [c.to_dict() for c in cs],
+        }, indent=2, ensure_ascii=False))
+        return
+
+    click.echo(f"file: {Path(aaf_path).resolve()}")
+    click.echo(f"sha256: {sha}")
+    click.echo(f"slot {slot}: {len(cs)} clip{'' if len(cs) == 1 else 's'}")
+    click.echo("")
+    for c in cs:
+        # Compact one-liner per clip. Recoverable mic identity gets
+        # bracketed for visibility; non-source-clip components show
+        # their class.
+        if c.component_class == "SourceClip":
+            label_parts = []
+            if c.mic_identity:
+                label_parts.append(f"[{c.mic_identity}]")
+            if c.source_mob_name:
+                label_parts.append(c.source_mob_name)
+            label = " ".join(label_parts) or "(unknown source)"
+            extra = f" recovery={c.recovery_status}"
+            if c.recovery_method and c.recovery_status != "recoverable":
+                extra += f"({c.recovery_method})"
+            click.echo(
+                f"  [{c.index:>4}] ts={c.timeline_start} len={c.length}"
+                f" {label}{extra}"
+            )
+        else:
+            click.echo(
+                f"  [{c.index:>4}] ts={c.timeline_start} len={c.length}"
+                f" <{c.component_class}>"
+            )
+        if c.sub_clips:
+            for sub in c.sub_clips:
+                sub_label = sub.mic_identity or sub.source_mob_name or "(unknown)"
+                click.echo(
+                    f"      └─ input{sub.index}: [{sub_label}] recovery={sub.recovery_status}"
+                )
+
+
+@cli.command()
+@click.argument("aaf_path", type=click.Path(exists=True, dir_okay=False, readable=True))
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+@click.option("--unused", is_flag=True,
+              help="Include sources with use_count=0 (default skips them).")
+def sources(aaf_path: str, as_json: bool, unused: bool) -> None:
+    """Cross-track deduplicated source-mob inventory with use counts.
+    Mirrors /api/sources."""
+    sha = _file_sha256(aaf_path)
+    with _open_readonly(aaf_path) as f:
+        inv = operator_mod.source_inventory(f)
+    if not unused:
+        inv = [e for e in inv if e.use_count > 0]
+
+    if as_json:
+        click.echo(json.dumps({
+            "file": str(Path(aaf_path).resolve()),
+            "sha256": sha,
+            "sources": [e.to_dict() for e in inv],
+            "total": len(inv),
+        }, indent=2, ensure_ascii=False))
+        return
+
+    click.echo(f"file: {Path(aaf_path).resolve()}")
+    click.echo(f"sha256: {sha}")
+    click.echo(f"{len(inv)} source mob{'' if len(inv) == 1 else 's'}"
+               f" {'(all)' if unused else '(used)'}")
+    click.echo("")
+    for e in inv:
+        bits = []
+        if e.sample_rate:
+            bits.append(e.sample_rate)
+        if e.bits_per_sample:
+            bits.append(f"{e.bits_per_sample}-bit")
+        if e.channels:
+            bits.append(f"{e.channels}ch")
+        if e.descriptor_class:
+            bits.append(e.descriptor_class)
+        fmt = " · ".join(bits) if bits else "—"
+        name = e.name or "(unnamed)"
+        loc = e.locators[0]["url"] if e.locators else ""
+        click.echo(f"  used={e.use_count:>4}  {name:<40}  {fmt}"
+                   + (f"  loc={loc}" if loc else ""))
 
 
 if __name__ == "__main__":

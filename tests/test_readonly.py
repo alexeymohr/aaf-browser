@@ -61,6 +61,17 @@ def _commands_for(aaf_path: str) -> list[list[str]]:
         ["find", aaf_path, "--pattern", "(?i)mob", "--in", "names"],
         ["find", aaf_path, "--pattern", "(?i)mob", "--in", "values"],
         ["find", aaf_path, "--pattern", "(?i)mob", "--json"],
+        # Phase 9: operator-layer CLI commands.
+        ["session", aaf_path],
+        ["session", aaf_path, "--json"],
+        ["tracks", aaf_path],
+        ["tracks", aaf_path, "--json"],
+        # minimal_aaf has no CompositionMob so 'clips' raises; skip
+        # the slot-required command for the per-command loop. The
+        # sources command works on any file.
+        ["sources", aaf_path],
+        ["sources", aaf_path, "--json"],
+        ["sources", aaf_path, "--unused", "--json"],
     ]
 
 
