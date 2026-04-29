@@ -13,7 +13,8 @@ the briefs at [docs/phase1-brief.md](docs/phase1-brief.md) (CLI),
 [docs/phase3-brief.md](docs/phase3-brief.md) (chain-walk + class-filtered find),
 [docs/phase4-brief.md](docs/phase4-brief.md) (macOS app + native file picker),
 [docs/phase5-brief.md](docs/phase5-brief.md) (embedded WKWebView),
-and [docs/phase6-brief.md](docs/phase6-brief.md) (operator-first browser layer).
+[docs/phase6-brief.md](docs/phase6-brief.md) (operator-first browser layer),
+and [docs/phase7-brief.md](docs/phase7-brief.md) (deeper recovery + per-clip info + Sources pull list).
 
 ## Install — macOS app (recommended)
 
@@ -167,9 +168,24 @@ What the GUI does:
 - **All Mobs** and **CFB** tabs sit alongside Tracks for the geek-view
   paths shipped through Phase 5: a flat Mob list grouped by class with
   name filter (All Mobs), and the raw CFB storage tree (CFB). The
-  inspector is shared across all three views — selecting something in
-  Tracks and switching to All Mobs leaves the inspector showing what
-  you last clicked.
+  inspector is shared across all four views — selecting something in
+  Tracks and switching to another tab leaves the inspector showing
+  what you last clicked.
+- **Sources** tab (Phase 7) is the cross-track pull list: a
+  deduplicated roster of every recorder source mob in the file,
+  sorted most-used-first, with use-count, format (sample rate · bit
+  depth · channels), and online/offline indicator dots when
+  Locator URLs are present. Selecting a source shows a "Used by"
+  panel that jumps directly to the corresponding clip in the
+  Tracks view. First load takes a few seconds (the server walks
+  every clip to compute use counts); subsequent visits are
+  instant.
+- Each clip row in the **Tracks** view also surfaces, in addition
+  to the recovered mic identity, its head/tail handle (frames +
+  seconds), per-clip audio format, and an offline indicator
+  when its source file path doesn't exist on disk. Multi-input
+  combiner clips (e.g. an Avid mix-down of two mics) expand into
+  one sub-clip per input, each with its own recovered identity.
 - Click a MobID badge anywhere in the inspector to jump to that Mob in
   the list (works across StrongRefVector members and scalar MobID
   values).

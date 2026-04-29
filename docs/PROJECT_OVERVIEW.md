@@ -124,6 +124,7 @@ parser is unnecessary and would complicate the read-only guarantee.
 | 4 | macOS app distribution + native file picker | Shipped — `docs/phase4-brief.md`, `docs/completion_reports/phase4-completion-report.md` |
 | 5 | Embedded WKWebView (real Mac app) | Shipped — `docs/phase5-brief.md`, `docs/completion_reports/phase5-completion-report.md` |
 | 6 | Operator-first browser layer (Tracks default landing) | Shipped — `docs/phase6-brief.md`, `docs/completion_reports/phase6-completion-report.md` |
+| 7 | Deeper recovery (multi-input combiner sub-walk) + per-clip operator info + Sources pull list | Shipped — `docs/phase7-brief.md`, `docs/completion_reports/phase7-completion-report.md` |
 
 Each phase brief was drafted only after the previous phase had been used in
 anger against at least one real AAF (the Password show is the recurring test
