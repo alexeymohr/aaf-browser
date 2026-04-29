@@ -29,6 +29,7 @@
      inspector takes whatever remains (1fr). */
   --col-tracks: 400px;
   --col-clips: 560px;
+  --col-sources: 480px;
   --col-mobs: 380px;
   --col-cfb: 380px;
   --splitter: 4px;
@@ -353,6 +354,9 @@ body.view-mobs #layout {
 body.view-cfb #layout {
   grid-template-columns: var(--col-cfb) var(--splitter) minmax(0, 1fr);
 }
+body.view-sources #layout {
+  grid-template-columns: var(--col-sources) var(--splitter) minmax(0, 1fr);
+}
 
 /* ---------- splitters ---------- */
 
@@ -380,9 +384,11 @@ body.resizing * {
 /* Per-view visibility: only the active view's left/center panes are
    shown; the inspector is always shown. */
 .view-tracks-only,
+.view-sources-only,
 .view-mobs-only,
 .view-cfb-only { display: none; }
 body.view-tracks .view-tracks-only { display: flex; }
+body.view-sources .view-sources-only { display: flex; }
 body.view-mobs .view-mobs-only { display: flex; }
 body.view-cfb .view-cfb-only { display: flex; }
 
@@ -682,6 +688,100 @@ body.view-cfb .view-cfb-only { display: flex; }
   color: var(--fg-muted);
 }
 .tree-children .tree-error { color: var(--error); }
+
+/* ---------- sources view (Phase 7 cross-track pull list) ---------- */
+
+.source-row {
+  display: grid;
+  grid-template-columns: 48px 1fr auto auto;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 14px 4px 10px;
+  cursor: pointer;
+  height: var(--row-h);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.source-row:hover { background: var(--hover-bg); }
+.source-row.selected { background: var(--selected-bg); }
+.source-row.unused { color: var(--fg-faint); }
+.source-row .source-uses {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent);
+  text-align: right;
+}
+.source-row.unused .source-uses { color: var(--fg-faint); }
+.source-row .source-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.source-row .source-name.untitled {
+  font-style: italic;
+  color: var(--fg-faint);
+}
+.source-row .source-format {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+.source-row .online-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-right: 2px;
+}
+.source-row .online-dot.offline { background: var(--error); }
+.source-row .online-dot.unknown { background: var(--fg-faint); }
+
+/* "Used by" panel inside the inspector when a source is selected. */
+.used-by-panel {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.used-by-panel h4 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+}
+.used-by-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 12px;
+  align-items: baseline;
+  padding: 2px 0;
+  cursor: pointer;
+}
+.used-by-row:hover { color: var(--accent); }
+.used-by-row .ub-track { color: var(--accent); }
+.used-by-row .ub-clip { color: var(--fg-muted); font-size: 11px; }
+.used-by-row .ub-tc { color: var(--fg-muted); font-size: 11px; }
+
+/* Sub-clip rendering inside the center-pane tree (multi-input
+   combiner inputs). Each sub_clip is a tree-row with a distinctive
+   left border so the visual fan-out from a combiner is obvious. */
+.tree-children .tree-row.sub-clip {
+  border-left-color: var(--accent-warm);
+  border-left-style: dashed;
+}
+
+/* Online/offline indicators on clip rows */
+.tree-row .online-marker {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+.tree-row .online-marker.offline { background: var(--error); }
 
 /* Operator-summary header on the inspector pane (Phase 6). Sits above
    the existing raw-object dump for known operator-meaningful types. */

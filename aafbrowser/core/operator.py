@@ -360,11 +360,17 @@ def _segment_components(segment: Any) -> list[Any]:
 
 
 def _build_source_clip_clip(handle: Any, index: int, comp_obj: Any,
-                            timeline_start: int, length: Optional[int]) -> "Clip":
+                            timeline_start: int, length: Optional[int],
+                            comp_slot_edit_rate: Any = None) -> "Clip":
     """Build a Clip for a SourceClip component, including chain-walk
     derived mic identity, recorder-source filter, and Phase 7 per-clip
     operator info (source locators, head/tail handles, per-clip audio
-    specs)."""
+    specs).
+
+    comp_slot_edit_rate is the AAFRational from the COMP slot containing
+    this clip — needed to convert head/tail handle math from comp slot
+    units to source-file (audio sample) units when the rates differ
+    (Avid: 29.97 timeline rate vs 48000 audio rate)."""
     source_mob_id = None
     source_mob_name = None
     source_mob_slot_id = None
@@ -454,18 +460,20 @@ def _build_source_clip_clip(handle: Any, index: int, comp_obj: Any,
         )
         terminal_mob_class_v = terminal.mob_class
 
-        # Handles: computed from the terminal SourceMob's slot (regardless
-        # of descriptor type — the math is just slot lengths).
-        terminal_mob = _resolve_mob_by_id_str(handle, terminal.mob_id)
-        if terminal_mob is not None and type(terminal_mob).__name__ == "SourceMob":
-            head_h, tail_h, head_s, tail_s = _compute_handles(
-                comp_obj, terminal_mob, terminal.slot_id,
-            )
-
-        # Audio info + locators: scan all hops for the first SourceMob
-        # whose descriptor carries audio-format info. In real Avid
-        # AAFs that's the MID-CHAIN file mob (WAVE/PCM/AIFC); the
-        # named terminal tape mob has TapeDescriptor with no specs.
+        # In real Avid AAFs the chain typically goes
+        #   MasterMob → file SourceMob (WAVE/PCM/AIFC, with audio info)
+        #             → tape SourceMob (TapeDescriptor, NAMED with the
+        #               recorder identifier — drives mic_identity)
+        # Handles AND audio info both belong to the FILE mob: its slot
+        # edit-rate is the audio sample rate, its slot length is the
+        # full source-file length. The terminal tape mob's slot is in
+        # video frames and its lengths aren't operator-meaningful for
+        # handle math. Scan all hops for the first SourceMob whose
+        # descriptor has audio info; use it for handles + audio specs +
+        # locators. Fall back to the terminal mob's slot when no
+        # audio-bearing mob is present (ImportDescriptor cases).
+        audio_mob = None
+        audio_slot_id = None
         for h in hops:
             if h.mob_class != "SourceMob":
                 continue
@@ -480,7 +488,20 @@ def _build_source_clip_clip(handle: Any, index: int, comp_obj: Any,
             audio_sr = audio_info.get("sample_rate")
             audio_bps = audio_info.get("bits_per_sample")
             audio_ch = audio_info.get("channels")
+            audio_mob = mob_obj
+            audio_slot_id = h.slot_id
             break
+
+        if audio_mob is not None:
+            head_h, tail_h, head_s, tail_s = _compute_handles(
+                comp_obj, comp_slot_edit_rate, audio_mob, audio_slot_id,
+            )
+        else:
+            terminal_mob = _resolve_mob_by_id_str(handle, terminal.mob_id)
+            if terminal_mob is not None and type(terminal_mob).__name__ == "SourceMob":
+                head_h, tail_h, head_s, tail_s = _compute_handles(
+                    comp_obj, comp_slot_edit_rate, terminal_mob, terminal.slot_id,
+                )
     except ValueError:
         # walk_chain raises ValueError when the SourceClip points at a
         # mob not in this file. Surface that without aborting the listing.
@@ -831,59 +852,81 @@ def _resolve_mob_by_id_str(handle: Any, mob_id_str: Optional[str]) -> Optional[A
 
 
 def _compute_handles(
-    source_clip: Any, terminal_mob: Any, terminal_slot_id: Optional[int]
+    source_clip: Any,
+    source_clip_edit_rate: Optional[Any],
+    target_mob: Any,
+    target_slot_id: Optional[int],
 ) -> tuple:
     """
     Compute (head_frames, tail_frames, head_seconds, tail_seconds) for
-    a clip given its originating SourceClip and the terminal SourceMob.
+    a clip given its originating SourceClip + the comp slot's edit
+    rate, and a target SourceMob (typically the file SourceMob).
 
-    head = the clip's offset INTO the terminal source (clip.start at
-    the second-to-last hop). For the typical 1-hop comp -> master ->
-    source case we approximate via the comp-level SourceClip's start
-    + length.
-    tail = source_slot_total_length - (start + length).
+    head = source_clip.start (offset into the source) — converted
+    from comp slot edit-rate units to target-slot edit-rate units when
+    the rates differ. tail = target_slot_length - (start + length),
+    all in the target slot's edit-rate units (typically the audio
+    sample rate).
 
-    All in source edit-rate units. seconds variants populated only when
-    the source slot's edit_rate is known.
+    Returns frames in TARGET slot units + derived seconds. seconds
+    variants populated only when the target slot's edit_rate is known.
+
+    The Avid case has comp slot at the timeline rate (29.97 fps) and
+    the file SourceMob slot at the audio sample rate (48000/1). Without
+    the rate conversion the numbers come out as bare counts in
+    mismatched units and aren't operator-meaningful.
     """
     head_frames: Optional[int] = None
     tail_frames: Optional[int] = None
     head_seconds: Optional[float] = None
     tail_seconds: Optional[float] = None
 
-    if source_clip is None or terminal_mob is None:
+    if source_clip is None or target_mob is None:
         return (head_frames, tail_frames, head_seconds, tail_seconds)
 
     start = getattr(source_clip, "start", None)
     length = getattr(source_clip, "length", None)
-    if isinstance(start, int):
-        head_frames = int(start)
 
-    # Find the terminal slot to read its total length and edit rate.
-    fn = getattr(terminal_mob, "slot_at", None)
+    # Find the target slot to read its total length and edit rate.
+    fn = getattr(target_mob, "slot_at", None)
     slot = None
-    if callable(fn) and terminal_slot_id is not None:
+    if callable(fn) and target_slot_id is not None:
         try:
-            slot = fn(terminal_slot_id)
+            slot = fn(target_slot_id)
         except Exception:
             slot = None
     if slot is None:
         return (head_frames, tail_frames, head_seconds, tail_seconds)
 
     total_length = getattr(getattr(slot, "segment", None), "length", None)
+    target_rate = _rational_to_float(getattr(slot, "edit_rate", None))
+    src_rate = _rational_to_float(source_clip_edit_rate)
+
+    # Convert comp-clip start/length into target slot units.
+    def _to_target(n: Any) -> Optional[float]:
+        if not isinstance(n, int):
+            return None
+        if src_rate is None or target_rate is None or src_rate <= 0:
+            return float(n)  # assume same rate when we can't compare
+        return n * (target_rate / src_rate)
+
+    start_t = _to_target(start)
+    length_t = _to_target(length)
+
+    if start_t is not None:
+        head_frames = int(round(start_t))
     if (
         isinstance(total_length, int)
-        and isinstance(start, int)
-        and isinstance(length, int)
+        and start_t is not None
+        and length_t is not None
     ):
-        tail_frames = int(total_length - (start + length))
+        tail_frames = int(round(total_length - (start_t + length_t)))
 
-    rate = _rational_to_float(getattr(slot, "edit_rate", None))
-    if rate and rate > 0:
+    if target_rate and target_rate > 0:
         if head_frames is not None:
-            head_seconds = head_frames / rate
+            head_seconds = head_frames / target_rate
         if tail_frames is not None:
-            tail_seconds = tail_frames / rate
+            tail_seconds = tail_frames / target_rate
 
     return (head_frames, tail_frames, head_seconds, tail_seconds)
 
@@ -1181,6 +1224,7 @@ def list_clips(handle: Any, slot_id: int) -> list[Clip]:
         )
 
     components = _segment_components(getattr(slot, "segment", None))
+    comp_slot_edit_rate = getattr(slot, "edit_rate", None)
     out: list[Clip] = []
     cursor = 0
     for i, comp_obj in enumerate(components):
@@ -1199,7 +1243,9 @@ def list_clips(handle: Any, slot_id: int) -> list[Clip]:
         if cls == "OperationGroup":
             inner = _unwrap_operation_group(comp_obj)
             if inner is not None:
-                clip = _build_source_clip_clip(handle, i, inner, cursor, length)
+                clip = _build_source_clip_clip(
+                    handle, i, inner, cursor, length, comp_slot_edit_rate
+                )
                 out.append(clip)
                 if isinstance(ln_raw, int):
                     cursor += ln_raw
@@ -1209,10 +1255,13 @@ def list_clips(handle: Any, slot_id: int) -> list[Clip]:
                 op_def = getattr(comp_obj, "operation", None)
                 op_name = getattr(op_def, "name", None) if op_def else None
                 sub_clips = tuple(
-                    _build_source_clip_clip(handle, j, inp, cursor,
-                                            int(getattr(inp, "length", 0))
-                                            if isinstance(getattr(inp, "length", None), int)
-                                            else None)
+                    _build_source_clip_clip(
+                        handle, j, inp, cursor,
+                        int(getattr(inp, "length", 0))
+                        if isinstance(getattr(inp, "length", None), int)
+                        else None,
+                        comp_slot_edit_rate,
+                    )
                     for j, inp in enumerate(input_clips)
                 )
                 clip = Clip(
@@ -1239,7 +1288,9 @@ def list_clips(handle: Any, slot_id: int) -> list[Clip]:
                 continue
 
         if cls == "SourceClip":
-            clip = _build_source_clip_clip(handle, i, comp_obj, cursor, length)
+            clip = _build_source_clip_clip(
+                handle, i, comp_obj, cursor, length, comp_slot_edit_rate
+            )
         else:
             # Filler, multi-input OperationGroup, Timecode, EssenceGroup,
             # Transition, etc. — surface as a clip row but don't try to

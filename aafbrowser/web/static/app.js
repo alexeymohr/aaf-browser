@@ -58,6 +58,14 @@ const sessionState = {
   timecode: null,   // {edit_rate, edit_rate_value, fps_nominal, drop, start_frames, ...}
 };
 
+// Sources-view state (Phase 7 cross-track pull list).
+const sourcesState = {
+  sources: [],          // SourceInventoryEntry dicts from /api/sources
+  loaded: false,        // true once /api/sources has been fetched at least once
+  filter: "",           // case-insensitive substring filter on name
+  selectedMobId: null,  // currently selected source mob_id
+};
+
 // Tracks-view (Phase 6) state. Independent of the geek-view state above.
 //
 // The center pane is a recursive tree of nodes. Each node has:
@@ -188,6 +196,11 @@ const api = {
   },
   async session() {
     const r = await fetch("/api/session");
+    if (!r.ok) throw await apiError(r);
+    return r.json();
+  },
+  async sources() {
+    const r = await fetch("/api/sources");
     if (!r.ok) throw await apiError(r);
     return r.json();
   },
@@ -337,6 +350,10 @@ function resetTracksState() {
   tracksState.editRateValue = null;
   sessionState.summary = null;
   sessionState.timecode = null;
+  sourcesState.sources = [];
+  sourcesState.loaded = false;
+  sourcesState.filter = "";
+  sourcesState.selectedMobId = null;
 }
 
 // Mirror the open file's basename into document.title. pywebview's
@@ -464,7 +481,9 @@ function wireViewTabs() {
 
 function activateView(view) {
   state.view = view;
-  document.body.classList.remove("view-tracks", "view-mobs", "view-cfb");
+  document.body.classList.remove(
+    "view-tracks", "view-sources", "view-mobs", "view-cfb"
+  );
   document.body.classList.add("view-" + view);
   $$("#view-tabs .view-tab").forEach((t) => {
     const active = t.dataset.view === view;
@@ -473,6 +492,7 @@ function activateView(view) {
   });
   // Lazy initialization per view
   if (view === "cfb") loadCfbTreeIfNeeded();
+  if (view === "sources") loadSourcesIfNeeded();
 }
 
 function wireCfbControls() {
@@ -1870,6 +1890,12 @@ function renderClipsPane() {
 
 function buildClipNode(clip) {
   const id = `clip:${tracksState.selectedSlotId}:${clip.index}`;
+  // Multi-input combiner clips have sub_clips; their tree expansion
+  // shows one row per input (each itself a clip node) instead of a
+  // direct AAF-object drill-down.
+  const hasSubClips = Array.isArray(clip.sub_clips) && clip.sub_clips.length > 0;
+  const expandable = hasSubClips ||
+    (clip.component_class === "SourceClip" && !!clip.source_mob_id);
   return {
     id,
     kind: "clip",
@@ -1877,11 +1903,42 @@ function buildClipNode(clip) {
     rowClass: clip.is_recorder_source
       ? "kind-clip-recorder"
       : (clip.component_class === "SourceClip" ? "" : "kind-clip-other"),
-    expandable: clip.component_class === "SourceClip" && !!clip.source_mob_id,
+    expandable,
     renderRow: () => renderClipRowContent(clip),
     fetchKids: async () => {
-      // Fetch the source MasterMob; its serialized subtree contains
-      // every nested aaf_object we need to descend through.
+      if (hasSubClips) {
+        // Multi-input combiner: each sub_clip is its own clip node,
+        // renderable with the same clip-row template. Mark them with
+        // a sub-clip class for visual distinction.
+        return clip.sub_clips.map((sub, i) => {
+          const subId = `${id}/sub${i}`;
+          const subHasKids = sub.component_class === "SourceClip" && !!sub.source_mob_id;
+          return {
+            id: subId,
+            kind: "clip",
+            data: sub,
+            rowClass: (sub.is_recorder_source
+              ? "kind-clip-recorder"
+              : (sub.component_class === "SourceClip" ? "" : "kind-clip-other"))
+              + " sub-clip",
+            expandable: subHasKids,
+            renderRow: () => renderClipRowContent(sub),
+            fetchKids: async () => {
+              if (!sub.source_mob_id) return [];
+              const env = await api.object({ mob_id: sub.source_mob_id });
+              return [buildObjectNode({
+                idPrefix: subId,
+                propPath: "",
+                propName: sub.source_mob_name
+                  ? `→ ${sub.source_mob_name}`
+                  : "→ source",
+                obj: env.object,
+              })];
+            },
+          };
+        });
+      }
+      // Normal SourceClip: drill into the source MasterMob.
       const env = await api.object({ mob_id: clip.source_mob_id });
       const child = buildObjectNode({
         idPrefix: id,
@@ -2070,6 +2127,21 @@ function renderClipRowContent(clip) {
       text.appendChild(el("span", { class: "reason" }, `ptn ${clip.physical_track_number}`));
     }
   }
+  // Offline indicator: red dot when any source locator is explicitly
+  // offline (file:// path doesn't exist). Operator-meaningful: needs
+  // a fetch from the recordist before conform.
+  let offlineMarker = null;
+  if (Array.isArray(clip.source_locators) && clip.source_locators.length > 0) {
+    const anyOffline = clip.source_locators.some((l) => l.online === false);
+    if (anyOffline) {
+      offlineMarker = el("span", {
+        class: "online-marker offline",
+        title: "source file path doesn't exist on disk",
+      });
+    }
+  }
+  if (offlineMarker) text.appendChild(offlineMarker);
+
   return el("span", { class: "tree-row-grid" }, [
     pos,
     el("span", { class: "clip-len", title: "duration" }, lenStr),
@@ -2264,11 +2336,43 @@ function operatorSummaryFor(clip) {
     row("PhysicalTrackNumber", clip.physical_track_number);
     row("Chain hops", clip.chain_length);
     row("Terminal reason", clip.terminal_reason);
+    // Phase 7: per-clip audio specs + handles
+    const sr = clip.audio_sample_rate
+      ? formatSampleRate(clip.audio_sample_rate)
+      : null;
+    if (sr || clip.audio_bits_per_sample || clip.audio_channels) {
+      row("Audio format",
+        [sr,
+         clip.audio_bits_per_sample ? `${clip.audio_bits_per_sample}-bit` : null,
+         clip.audio_channels ? formatChannelCount(clip.audio_channels) : null,
+        ].filter(Boolean).join(" · ") || "—");
+    }
+    if (clip.head_handle_frames != null || clip.tail_handle_frames != null) {
+      const headStr = clip.head_handle_seconds != null
+        ? `${clip.head_handle_frames} frames (${formatSecondsJs(clip.head_handle_seconds)})`
+        : (clip.head_handle_frames != null
+            ? `${clip.head_handle_frames} frames` : "—");
+      const tailStr = clip.tail_handle_seconds != null
+        ? `${clip.tail_handle_frames} frames (${formatSecondsJs(clip.tail_handle_seconds)})`
+        : (clip.tail_handle_frames != null
+            ? `${clip.tail_handle_frames} frames` : "—");
+      row("Head handle", headStr);
+      row("Tail handle", tailStr);
+    }
   }
+
+  // Sub-clips (multi-input combiner) summary
+  if (clip.sub_clips && clip.sub_clips.length > 0) {
+    row("Combiner inputs", clip.sub_clips.length);
+  }
+
   return el("section", { class: "operator-summary" }, [
     el("h4", {}, "Operator summary"),
     dl,
-  ]);
+    clip.source_locators && clip.source_locators.length > 0
+      ? renderLocatorsList(clip.source_locators)
+      : null,
+  ].filter(Boolean));
 }
 
 // Render an aaf_object the same way the geek-view inspector does,
@@ -2290,6 +2394,270 @@ function renderObjectInline(obj) {
   }
   host.appendChild(tbl);
   return host;
+}
+
+// ---------- Sources view (Phase 7 cross-track pull list) ----------
+
+async function loadSourcesIfNeeded(force = false) {
+  if (!state.file) {
+    renderSourceList();
+    return;
+  }
+  if (sourcesState.loaded && !force) return;
+  // First fetch is slow (server walks every clip in the topmost
+  // composition); show a loading hint in the list.
+  $("#source-list").replaceChildren(
+    el("div", { class: "loading-row" }, [
+      el("span", { class: "spinner" }),
+      document.createTextNode(" Building source inventory…"),
+    ])
+  );
+  try {
+    const env = await api.sources();
+    sourcesState.sources = env.sources || [];
+    sourcesState.loaded = true;
+    renderSourceList();
+  } catch (e) {
+    $("#source-list").replaceChildren(
+      el("p", { class: "error", style: "padding: 14px;" },
+        "Error: " + (e.message || String(e)))
+    );
+  }
+}
+
+function renderSourceList() {
+  const root = $("#source-list");
+  root.replaceChildren();
+  if (!state.file) {
+    root.appendChild(el("p", { class: "muted", style: "padding: 14px;" },
+      "No file open."));
+    return;
+  }
+  const filter = sourcesState.filter.toLowerCase();
+  const matches = sourcesState.sources.filter((s) => {
+    if (!filter) return true;
+    return (s.name || "").toLowerCase().includes(filter);
+  });
+  if (matches.length === 0) {
+    root.appendChild(el("p", { class: "muted", style: "padding: 14px;" },
+      filter ? "No matches." : "No sources."));
+    return;
+  }
+  for (const src of matches) {
+    root.appendChild(renderSourceRow(src));
+  }
+}
+
+function renderSourceRow(src) {
+  const isSelected = sourcesState.selectedMobId === src.mob_id;
+  const isUsed = (src.use_count || 0) > 0;
+  // Online indicator: choose the strongest signal across the source's
+  // locators. green dot if any locator is online; red if any is
+  // explicitly offline; grey if all are unknown (non-local URLs); none
+  // if no locators.
+  let onlineSignal = "none";
+  if (src.locators && src.locators.length > 0) {
+    onlineSignal = "unknown";
+    for (const loc of src.locators) {
+      if (loc.online === true) { onlineSignal = "online"; break; }
+      if (loc.online === false) onlineSignal = "offline";
+    }
+  }
+  const indicator = onlineSignal === "none"
+    ? null
+    : el("span", {
+        class: "online-dot " + (onlineSignal === "online" ? "" : onlineSignal),
+        title: onlineSignal === "online"
+          ? "source file resolves locally"
+          : (onlineSignal === "offline"
+              ? "source file path doesn't exist on disk"
+              : "source URL not resolvable locally"),
+      });
+
+  return el(
+    "div",
+    {
+      class: "source-row" + (isSelected ? " selected" : "")
+              + (isUsed ? "" : " unused"),
+      onclick: () => selectSource(src.mob_id),
+    },
+    [
+      el("span", { class: "source-uses", title: `${src.use_count} clip uses` },
+        src.use_count != null ? String(src.use_count) : "0"),
+      el("span", { class: "source-name" + (src.name ? "" : " untitled") },
+        src.name || `untitled ${tailMobId(src.mob_id)}`),
+      el("span", { class: "source-format" }, formatSourceFormat(src)),
+      indicator,
+    ].filter(Boolean)
+  );
+}
+
+function formatSourceFormat(src) {
+  // Short label combining sample rate / bit depth / channels +
+  // descriptor class (e.g. "48k 24-bit mono · WAVE").
+  const bits = [];
+  if (src.sample_rate) {
+    bits.push(formatSampleRate(src.sample_rate));
+  }
+  if (src.bits_per_sample) {
+    bits.push(`${src.bits_per_sample}-bit`);
+  }
+  if (src.channels) {
+    bits.push(formatChannelCount(src.channels));
+  }
+  if (src.descriptor_class) {
+    const short = src.descriptor_class
+      .replace(/Descriptor$/, "")
+      .replace(/^Import$/, "imp")
+      .replace(/^Tape$/, "tape");
+    bits.push(short);
+  }
+  return bits.length ? bits.join(" · ") : "—";
+}
+
+function selectSource(mobId) {
+  sourcesState.selectedMobId = mobId;
+  $$(".source-row").forEach((r) => r.classList.remove("selected"));
+  // Find and highlight the row by mob_id (use a data attribute? or
+  // re-render). Re-render is simpler; the source list is small.
+  renderSourceList();
+  showSourceInInspector(mobId);
+}
+
+async function showSourceInInspector(mobId) {
+  const src = sourcesState.sources.find((s) => s.mob_id === mobId);
+  if (!src) return;
+  $("#breadcrumb").replaceChildren(
+    el("span", { class: "muted" }, "source "),
+    el("span", { class: "crumb head" },
+      src.name || tailMobId(mobId)),
+  );
+  // Operator-summary-style header for the source, then the full
+  // /api/object dump for the underlying SourceMob, then a "Used by"
+  // panel with clickable jumps to clips.
+  $("#inspector").replaceChildren(operatorSummaryForSource(src));
+  const inspector = $("#inspector");
+  // Used-by list
+  if (src.used_by && src.used_by.length > 0) {
+    inspector.appendChild(renderUsedByPanel(src));
+  }
+  // Underlying SourceMob object dump
+  const loading = el("p", { class: "muted" }, "Loading source mob…");
+  inspector.appendChild(loading);
+  try {
+    const env = await api.object({ mob_id: mobId });
+    loading.remove();
+    inspector.appendChild(operatorSubheader("Source mob (raw)"));
+    inspector.appendChild(renderObjectInline(env.object));
+  } catch (e) {
+    loading.textContent = "Error: " + (e.message || String(e));
+    loading.classList.remove("muted");
+    loading.classList.add("error");
+  }
+}
+
+function operatorSummaryForSource(src) {
+  const dl = el("dl");
+  const row = (k, v, cls) => {
+    dl.appendChild(el("dt", {}, k));
+    dl.appendChild(el("dd", cls ? { class: cls } : {}, v == null ? "—" : String(v)));
+  };
+  row("Name", src.name || "(unnamed)", src.name ? "mic" : "muted");
+  row("Mob ID", tailMobId(src.mob_id));
+  row("Descriptor", src.descriptor_class || "—");
+  row("Sample rate", src.sample_rate ? formatSampleRate(src.sample_rate) : "—");
+  row("Bit depth", src.bits_per_sample ? `${src.bits_per_sample}-bit` : "—");
+  row("Channels", src.channels ? formatChannelCount(src.channels) : "—");
+  row("Use count", src.use_count);
+  return el("section", { class: "operator-summary" }, [
+    el("h4", {}, "Source summary"),
+    dl,
+    src.locators && src.locators.length > 0
+      ? renderLocatorsList(src.locators)
+      : null,
+  ].filter(Boolean));
+}
+
+function renderLocatorsList(locators) {
+  const host = el("div", {
+    style: "margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border);"
+  });
+  host.appendChild(el("h4", {}, "Locators"));
+  for (const loc of locators) {
+    const onlineLabel = loc.online === true ? "online"
+                      : loc.online === false ? "offline"
+                      : "unknown";
+    const onlineClass = loc.online === true ? "" :
+                       loc.online === false ? "offline" : "unknown";
+    host.appendChild(el("div",
+      { style: "display: flex; gap: 8px; align-items: center; padding: 2px 0;" },
+      [
+        el("span", { class: "online-dot " + onlineClass,
+                      title: onlineLabel }),
+        el("span", { class: "muted", style: "font-size:10px; min-width:48px;" },
+          loc.kind),
+        el("span", { style: "word-break: break-all;" }, loc.url),
+      ]));
+  }
+  return host;
+}
+
+function renderUsedByPanel(src) {
+  const panel = el("section", { class: "used-by-panel" });
+  panel.appendChild(el("h4", {},
+    `Used by ${src.used_by.length} clip${src.used_by.length === 1 ? "" : "s"}` +
+    (src.use_count > src.used_by.length
+      ? ` (showing ${src.used_by.length} of ${src.use_count})` : "")));
+  for (const u of src.used_by) {
+    const trackLabel = u.track_name || `slot ${u.track_slot_id}`;
+    const tcLabel = sessionState.timecode
+      ? formatTimecodeJs(
+          (sessionState.timecode.start_frames || 0) + (u.timeline_start || 0),
+          sessionState.timecode.fps_nominal,
+          !!sessionState.timecode.drop)
+      : null;
+    panel.appendChild(el(
+      "div",
+      {
+        class: "used-by-row",
+        title: "Jump to this clip",
+        onclick: () => jumpToClipFromSource(u.track_slot_id, u.clip_index),
+      },
+      [
+        el("span", { class: "ub-track" }, trackLabel),
+        el("span", { class: "ub-clip" }, `clip ${u.clip_index}`),
+        el("span", { class: "ub-tc" }, tcLabel || String(u.timeline_start || 0)),
+      ]
+    ));
+  }
+  return panel;
+}
+
+async function jumpToClipFromSource(slotId, clipIndex) {
+  // Switch to Tracks view, select the track, then highlight the clip.
+  activateView("tracks");
+  await selectTrack(slotId);
+  // After selectTrack the clips are loaded. Find the clip and select it.
+  const clip = tracksState.clips.find((c) => c.index === clipIndex);
+  if (clip) {
+    selectTreeNode(buildClipNode(clip));
+    // Scroll the row into view
+    setTimeout(() => {
+      const row = document.querySelector(
+        `#clips-tree .tree-node[data-node-id="clip:${slotId}:${clipIndex}"] > .tree-row`
+      );
+      if (row) row.scrollIntoView({ block: "center" });
+    }, 0);
+  }
+}
+
+function wireSourceFilter() {
+  const input = $("#source-filter");
+  if (!input) return;
+  input.addEventListener("input", (ev) => {
+    sourcesState.filter = ev.target.value.trim();
+    renderSourceList();
+  });
 }
 
 // ---------- splitter drag handlers ----------
@@ -2338,6 +2706,7 @@ async function init() {
   wireViewTabs();
   wireSplitters();
   wireFilter();
+  wireSourceFilter();
   wireCfbControls();
   wireFindPanel();
   setFileStatus();

@@ -48,6 +48,8 @@
   <nav id="view-tabs" role="tablist">
     <button class="view-tab active" data-view="tracks" type="button"
             role="tab" aria-selected="true">Tracks</button>
+    <button class="view-tab" data-view="sources" type="button"
+            role="tab" aria-selected="false">Sources</button>
     <button class="view-tab" data-view="mobs" type="button"
             role="tab" aria-selected="false">All Mobs</button>
     <button class="view-tab" data-view="cfb" type="button"
@@ -87,6 +89,19 @@
     </section>
     <div class="splitter view-tracks-only" data-resize="--col-clips"
          data-min="240" data-max="900"></div>
+
+    <!-- Sources view: cross-track source-mob pull list (col 1),
+         shared inspector (col 3). Splitter in col 2. Visible when
+         body.view-sources. -->
+    <aside id="sources-pane" class="left-pane view-sources-only">
+      <div class="filter-row">
+        <input id="source-filter" type="text" placeholder="filter by name…"
+               autocomplete="off" spellcheck="false">
+      </div>
+      <div id="source-list" class="scroll-list"></div>
+    </aside>
+    <div class="splitter view-sources-only" data-resize="--col-sources"
+         data-min="280" data-max="800"></div>
 
     <!-- All Mobs view: mob list (col 1), shared inspector (col 3).
          Splitter in col 2. Visible when body.view-mobs. -->
