@@ -46,16 +46,30 @@ export NOTARYTOOL_PROFILE="AC_PASSWORD"
 bash packaging/macos/build.sh
 ```
 
-The build runs as before, plus:
-1. `xcrun notarytool submit` (no `--wait` — see below), then poll the
-   `notarytool log` endpoint every 30s until it returns the real
-   outcome. Typical round-trip 1-3 minutes; capped at 30 minutes.
-2. `xcrun stapler staple` on success — embeds the notarization
-   ticket in the .dmg so it works offline.
-3. `xcrun stapler validate` as a sanity check.
+The build runs as before, plus **two notarization round-trips**:
+1. **The .app is notarized + stapled first.** The .app is zipped via
+   `ditto` (notarytool requires a single-file submission), uploaded
+   for notarization, and on Acceptance the ticket is stapled directly
+   onto the .app bundle.
+2. **The DMG is built around the stapled .app**, signed, then itself
+   notarized + stapled.
 
-**Why we don't use `--wait`:** Apple's submission `status` endpoint has
-an intermittent bug where it stalls reporting `"In Progress"` for
+Both round-trips use the same submit-then-poll-`log` pattern (no
+`--wait` — see below). Total time: typically 3-6 minutes for both.
+
+**Why both .app AND DMG must be stapled:** stapling a DMG only
+embeds the notarization ticket in the DMG itself, *not* in files
+inside it. When users mount the DMG and drag the .app to
+`/Applications`, the resulting .app has no embedded ticket. macOS
+Gatekeeper falls back to an *online* lookup of the ticket via
+Apple's notary service — but on macOS 15 (Sequoia) that lookup is
+unreliable and routinely fails on fresh installs. The user sees
+"Apple could not verify..." even though the .app was correctly
+notarized. Stapling the .app itself before packaging means the
+ticket travels with it everywhere and never needs an online check.
+
+**Why we don't use `--wait`:** Apple's submission `status` endpoint
+has an intermittent bug where it stalls reporting `"In Progress"` for
 hours (sometimes >12h) after the submission has actually completed on
 their side. The `log` endpoint always returns truth — it returns
 `Submission log is not yet available...` while genuinely processing,
@@ -63,7 +77,9 @@ then returns the full JSON log the moment the submission finishes.
 The build script polls `log` directly so a stalled `status` endpoint
 doesn't hang the build.
 
-The resulting `.dmg` opens on any Mac without a Gatekeeper prompt.
+The resulting `.dmg` opens on any Mac without a Gatekeeper prompt,
+and the .app inside opens without a Gatekeeper prompt even when
+copied to a different machine offline.
 
 ## CI builds
 
