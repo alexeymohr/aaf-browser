@@ -47,10 +47,21 @@ bash packaging/macos/build.sh
 ```
 
 The build runs as before, plus:
-1. `xcrun notarytool submit ... --wait` (round-trip ~1 minute).
+1. `xcrun notarytool submit` (no `--wait` — see below), then poll the
+   `notarytool log` endpoint every 30s until it returns the real
+   outcome. Typical round-trip 1-3 minutes; capped at 30 minutes.
 2. `xcrun stapler staple` on success — embeds the notarization
    ticket in the .dmg so it works offline.
 3. `xcrun stapler validate` as a sanity check.
+
+**Why we don't use `--wait`:** Apple's submission `status` endpoint has
+an intermittent bug where it stalls reporting `"In Progress"` for
+hours (sometimes >12h) after the submission has actually completed on
+their side. The `log` endpoint always returns truth — it returns
+`Submission log is not yet available...` while genuinely processing,
+then returns the full JSON log the moment the submission finishes.
+The build script polls `log` directly so a stalled `status` endpoint
+doesn't hang the build.
 
 The resulting `.dmg` opens on any Mac without a Gatekeeper prompt.
 
@@ -106,5 +117,20 @@ profile is stale (old session). Re-run `store-credentials` to
 refresh.
 
 **Apple notary service is slow** — 30-90 seconds is normal.
-Multi-minute hangs occasionally happen during Apple's busy times;
-the `--wait` flag will eventually return.
+Multi-minute hangs occasionally happen during Apple's busy times.
+The build script polls every 30s and gives up after 30 minutes.
+
+**Build script timed out / suspect Apple's status is stuck** — query
+the `log` endpoint directly:
+```bash
+xcrun notarytool log <SUBMISSION_ID> --keychain-profile AC_PASSWORD
+```
+If the response is JSON with `"status": "Accepted"`, the submission
+actually succeeded (Apple's status endpoint was lying). Just staple
+the existing DMG and you're done:
+```bash
+xcrun stapler staple "dist/AAF-Browser-vX.Y.Z-arm64.dmg"
+xcrun stapler validate "dist/AAF-Browser-vX.Y.Z-arm64.dmg"
+```
+If it returns `"Submission log is not yet available..."`, the
+submission is still genuinely processing — wait and re-query.

@@ -21,7 +21,7 @@ and [docs/phase9-brief.md](docs/phase9-brief.md) (CLI parity + notarization).
 ## Install — macOS app (recommended)
 
 Download the latest `AAF-Browser-vX.Y.Z-arm64.dmg` from the
-[GitHub Releases](https://github.com/alexeymohr/AAF_Browser/releases)
+[GitHub Releases](https://github.com/alexeymohr/aaf-browser/releases)
 page, mount it, and drag **AAF Browser** to `/Applications`. Launch
 from Spotlight or the Applications folder. The app opens in a real
 macOS window — title bar, dock icon, native menu bar with Cmd-Q to

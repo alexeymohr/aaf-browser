@@ -129,20 +129,73 @@ if [[ "${NOTARIZE:-0}" == "1" ]]; then
     echo "    Notarization requires a Developer ID-signed bundle." >&2
     exit 1
   fi
-  echo "==> Submitting to Apple notary service (this can take a minute)"
+
+  # Build credential args once; submit and log both need them.
+  CRED_ARGS=()
   if [[ -n "${NOTARYTOOL_PROFILE:-}" ]]; then
-    xcrun notarytool submit "$DMG_PATH" \
-      --keychain-profile "$NOTARYTOOL_PROFILE" --wait
+    CRED_ARGS=(--keychain-profile "$NOTARYTOOL_PROFILE")
   else
     : "${APPLE_ID:?APPLE_ID env var required when NOTARYTOOL_PROFILE is unset}"
     : "${APPLE_TEAM_ID:?APPLE_TEAM_ID env var required}"
     : "${APPLE_APP_PASSWORD:?APPLE_APP_PASSWORD env var required}"
-    xcrun notarytool submit "$DMG_PATH" \
-      --apple-id "$APPLE_ID" \
-      --team-id "$APPLE_TEAM_ID" \
-      --password "$APPLE_APP_PASSWORD" \
-      --wait
+    CRED_ARGS=(
+      --apple-id "$APPLE_ID"
+      --team-id "$APPLE_TEAM_ID"
+      --password "$APPLE_APP_PASSWORD"
+    )
   fi
+
+  # We deliberately do NOT use `notarytool submit --wait`. Apple's
+  # status endpoint has an intermittent bug where it stalls reporting
+  # "In Progress" for hours (sometimes >12h) after the submission has
+  # actually completed. The `log` endpoint returns truth even when
+  # status is stuck, so we submit asynchronously and poll `log`
+  # ourselves — first successful log fetch tells us the real outcome.
+  echo "==> Submitting to Apple notary service"
+  SUBMIT_OUTPUT=$(xcrun notarytool submit "$DMG_PATH" "${CRED_ARGS[@]}" 2>&1)
+  echo "$SUBMIT_OUTPUT"
+  SUB_ID=$(echo "$SUBMIT_OUTPUT" | awk '/^[[:space:]]+id:/ {print $2; exit}')
+  if [[ -z "$SUB_ID" ]]; then
+    echo "==> Could not extract submission ID from notarytool output" >&2
+    exit 1
+  fi
+  echo "==> Submission ID: $SUB_ID"
+
+  echo "==> Polling notary log endpoint (typical: 1-3 min, max: 30 min)"
+  POLL_TIMEOUT=1800   # seconds; 30 minutes is well past Apple's normal SLA
+  POLL_INTERVAL=30
+  ELAPSED=0
+  LOG_JSON=""
+  LAST_OUTPUT=""
+  while (( ELAPSED < POLL_TIMEOUT )); do
+    LAST_OUTPUT=$(xcrun notarytool log "$SUB_ID" "${CRED_ARGS[@]}" 2>&1 || true)
+    if echo "$LAST_OUTPUT" | grep -q '"status"'; then
+      LOG_JSON="$LAST_OUTPUT"
+      break
+    fi
+    sleep "$POLL_INTERVAL"
+    ELAPSED=$((ELAPSED + POLL_INTERVAL))
+    echo "  (${ELAPSED}s elapsed, still waiting...)"
+  done
+
+  if [[ -z "$LOG_JSON" ]]; then
+    echo "==> Notarization timed out after ${POLL_TIMEOUT}s." >&2
+    echo "    Submission ID: $SUB_ID" >&2
+    echo "    Last log response:" >&2
+    echo "$LAST_OUTPUT" | sed 's/^/      /' >&2
+    echo "    Re-check manually with:" >&2
+    echo "      xcrun notarytool log $SUB_ID ..." >&2
+    exit 1
+  fi
+
+  if echo "$LOG_JSON" | grep -q '"status": "Accepted"'; then
+    echo "==> Notarization Accepted"
+  else
+    echo "==> Notarization rejected. Full log:" >&2
+    echo "$LOG_JSON" >&2
+    exit 1
+  fi
+
   echo "==> Stapling notarization ticket"
   xcrun stapler staple "$DMG_PATH"
   xcrun stapler validate "$DMG_PATH"

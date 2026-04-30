@@ -16,6 +16,11 @@ dependencies = [
     "flask>=3.0,<3.2",
 ]
 
+[project.urls]
+Homepage = "https://github.com/alexeymohr/aaf-browser"
+Repository = "https://github.com/alexeymohr/aaf-browser"
+Issues = "https://github.com/alexeymohr/aaf-browser/issues"
+
 [project.optional-dependencies]
 test = ["pytest>=8"]
 mac-build = [
