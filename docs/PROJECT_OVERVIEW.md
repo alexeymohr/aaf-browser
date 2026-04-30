@@ -28,7 +28,7 @@ Multiple Pro Tools tracks end up labeled "ISO1" with no obvious way to
 distinguish, e.g., the host Mike from the contestant Mike at the editorial
 clip level.
 
-A prior Claude Code investigation claimed channel identity is encoded in some
+A prior investigation claimed channel identity is encoded in some
 "sub-folder structure" inside the AAF file. That phrasing strongly implies the
 raw CFB layer rather than the pyaaf2-surfaced object model. We need to verify
 that claim independently — by directly inspecting the structure rather than
