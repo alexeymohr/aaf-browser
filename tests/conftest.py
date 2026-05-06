@@ -384,6 +384,70 @@ def _write_premiere_polywav_aaf(path: Path) -> None:
             ))
 
 
+def _write_transition_aaf(path: Path) -> None:
+    """
+    A CompositionMob with one audio slot containing two SourceClips
+    separated by a Transition. In AAF, a Transition represents the
+    OVERLAP between adjacent clips, not extra timeline duration:
+    the second clip's timeline_start is (clip1.length - transition.length),
+    not (clip1.length + transition.length).
+
+    Layout: [SourceClip A (len=1000), Transition (len=100), SourceClip B (len=1000)]
+    Expected sequence timeline length: 1000 + 1000 - 100 = 1900
+    Expected timeline_start of clip B: 900 (= 1000 - 100)
+    """
+    with aaf2.open(str(path), "w") as f:
+        # One source mob to point both clips at.
+        sm = f.create.SourceMob("XfadeSrc")
+        f.content.mobs.append(sm)
+        sm.descriptor = f.create.ImportDescriptor()
+        s_slot = sm.create_sound_slot(edit_rate=48000)
+
+        mm = f.create.MasterMob("XfadeMaster")
+        f.content.mobs.append(mm)
+        m_slot = mm.create_sound_slot(edit_rate=48000)
+        m_slot.segment = f.create.SourceClip(
+            start=0, length=2000, mob_id=sm.mob_id, slot_id=s_slot.slot_id,
+        )
+
+        comp = f.create.CompositionMob("XfadeComp")
+        f.content.mobs.append(comp)
+        a = comp.create_sound_slot(edit_rate=48000)
+        a["PhysicalTrackNumber"].value = 1
+
+        clip_a = f.create.SourceClip(
+            start=0, length=1000, mob_id=mm.mob_id, slot_id=m_slot.slot_id,
+        )
+        # Transition needs an OperationGroup describing the effect; an
+        # opaque dissolve is fine for testing offset math.
+        try:
+            op_def = f.dictionary.lookup_operationdef("MonoAudioDissolve")
+        except Exception:
+            op_def = f.create.OperationDef(
+                aaf2.auid.AUID("0e24dd54-66cd-4f1a-b0a0-670ac3a7a0b3"),
+                "MonoAudioDissolve",
+                "Synthetic dissolve for transition tests.",
+            )
+            op_def["IsTimeWarp"].value = False
+            op_def["DataDefinition"].value = f.dictionary.lookup_datadef("Sound")
+            op_def["NumberInputs"].value = 2
+            f.dictionary["OperationDefinitions"].append(op_def)
+        og = f.create.OperationGroup(op_def, length=100)
+        og["DataDefinition"].value = f.dictionary.lookup_datadef("Sound")
+        transition = f.create.Transition(length=100)
+        transition["OperationGroup"].value = og
+        # CutPoint: 50 = midpoint of the 100-frame overlap
+        transition["CutPoint"].value = 50
+
+        clip_b = f.create.SourceClip(
+            start=0, length=1000, mob_id=mm.mob_id, slot_id=m_slot.slot_id,
+        )
+
+        a.segment.components.append(clip_a)
+        a.segment.components.append(transition)
+        a.segment.components.append(clip_b)
+
+
 def _write_broken_ref_aaf(path: Path) -> None:
     """A MasterMob whose SourceClip references a MobID that's not in the file."""
     from aaf2.mobid import MobID
@@ -456,6 +520,13 @@ def premiere_polywav_aaf(fixture_dir: Path) -> Path:
 def cycle_aaf(fixture_dir: Path) -> Path:
     p = fixture_dir / "cycle.aaf"
     _write_cycle_aaf(p)
+    return p
+
+
+@pytest.fixture(scope="session")
+def transition_aaf(fixture_dir: Path) -> Path:
+    p = fixture_dir / "transition.aaf"
+    _write_transition_aaf(p)
     return p
 
 

@@ -1501,6 +1501,41 @@ def list_clips(handle: Any, slot_id: int) -> list[Clip]:
                     cursor += ln_raw
                 continue
 
+        if cls == "Transition":
+            # Transitions in a Sequence represent the OVERLAP between
+            # the two adjacent components, not extra timeline duration.
+            # A transition of length L means: the previous component's
+            # last L frames AND the next component's first L frames
+            # both occupy the same L frames of timeline. So:
+            #   - The transition's timeline span = [cursor - L, cursor]
+            #   - The next non-transition component starts at cursor - L
+            # Equivalently: cursor advances by -L when we hit a
+            # transition. Without this, every clip following a
+            # transition appears L frames later than it should, which
+            # users see as "the clip Resolve shows at TC X is missing
+            # from AAF Browser's view" because we put it at TC X+L.
+            transition_len = int(ln_raw) if isinstance(ln_raw, int) else 0
+            transition_start = cursor - transition_len
+            clip = Clip(
+                index=i,
+                component_class=cls,
+                timeline_start=transition_start,
+                length=length,
+                source_mob_id=None,
+                source_mob_name=None,
+                source_mob_slot_id=None,
+                mic_identity=None,
+                is_recorder_source=False,
+                terminal_reason=cls.lower(),
+                physical_track_number=None,
+                chain_length=0,
+                recovery_status="unrecoverable",
+                recovery_method=f"non_source_clip_{cls.lower()}",
+            )
+            out.append(clip)
+            cursor = transition_start
+            continue
+
         if cls == "SourceClip":
             clip = _build_source_clip_clip(
                 handle, i, comp_obj, cursor, length, comp_slot_edit_rate,
@@ -1508,8 +1543,8 @@ def list_clips(handle: Any, slot_id: int) -> list[Clip]:
             )
         else:
             # Filler, multi-input OperationGroup, Timecode, EssenceGroup,
-            # Transition, etc. — surface as a clip row but don't try to
-            # chain-walk. The frontend visually de-emphasizes these.
+            # etc. — surface as a clip row but don't try to chain-walk.
+            # The frontend visually de-emphasizes these.
             clip = Clip(
                 index=i,
                 component_class=cls,

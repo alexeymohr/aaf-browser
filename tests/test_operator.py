@@ -512,6 +512,54 @@ def test_combiner_recovery_status_aggregates(combiner_aaf):
     assert og.recovery_method == "combiner_all_inputs_recovered"
 
 
+def test_transition_does_not_inflate_timeline_offsets(transition_aaf):
+    """In AAF, a Transition between two clips represents the OVERLAP
+    region — its length is duration that the surrounding clips share,
+    not extra timeline duration. The next clip after a transition
+    starts at (cursor - transition.length), not (cursor + transition.length).
+
+    Regression test for the Cherries Wild bug: every clip after a
+    transition was reported off by the cumulative transition length
+    preceding it, so users couldn't find clips at the timecode their
+    NLE displayed.
+
+    Layout: [SourceClip A (1000), Transition (100), SourceClip B (1000)]
+      - A starts at 0
+      - Transition's timeline span = [900, 1000] (overlap)
+      - B starts at 900 (overlaps with transition)
+    Total timeline length: 1900 (not 2100).
+    """
+    from aafbrowser.core.operator import list_clips
+    with aaf2.open(str(transition_aaf), "r") as f:
+        comp = next(f.content.compositionmobs())
+        slot_id = comp.slots[0].slot_id
+        clips = list_clips(f, slot_id)
+
+    assert len(clips) == 3
+    a, t, b = clips
+    assert a.component_class == "SourceClip"
+    assert t.component_class == "Transition"
+    assert b.component_class == "SourceClip"
+
+    assert a.timeline_start == 0
+    assert a.length == 1000
+    # The transition occupies the overlap region — its timeline_start
+    # is 900 (= 1000 - 100), not 1000.
+    assert t.timeline_start == 900, (
+        f"Transition should start at 900 (overlap with end of clip A), "
+        f"got {t.timeline_start}"
+    )
+    assert t.length == 100
+    # Clip B starts at the same position as the transition (the
+    # overlap point), not at the transition's end.
+    assert b.timeline_start == 900, (
+        f"Clip after transition should start at 900 (overlap point), "
+        f"got {b.timeline_start} — this is the off-by-transition-length "
+        f"bug that hides clips from users searching by timecode."
+    )
+    assert b.length == 1000
+
+
 def test_session_summary_includes_authoring_when_present(multi_track_aaf):
     """pyaaf2's writer populates Header.IdentificationList with a
     "pyaaf2" identification entry on file write — every fixture AAF
