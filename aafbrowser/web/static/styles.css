@@ -420,6 +420,22 @@ body.view-cfb .view-cfb-only { display: flex; }
   color: var(--fg-muted);
 }
 
+/* Long composition / file names (e.g. real-world Avid AAF exports
+   whose CompositionMob name is the full session label, often 50+
+   characters with no natural break points) need to soft-wrap inside
+   the tracks/clips summary spans rather than spilling into the next
+   pane. flex:1 + min-width:0 is the standard "let me shrink in a
+   flex row" combo; overflow-wrap:anywhere breaks mid-token if no
+   space exists to wrap on. */
+#tracks-summary,
+#clips-summary {
+  flex: 1 1 0;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .scroll-list {
   /* Both axes scroll: rows use white-space: nowrap so deep tree
      children overflow horizontally on narrow panes; vertical scroll
@@ -427,6 +443,73 @@ body.view-cfb .view-cfb-only { display: flex; }
   overflow: auto;
   flex: 1;
   padding: 4px 0;
+}
+
+/* ---------- scrollbar styling (force visible non-overlay) ----------
+ *
+ * macOS's default scrollbars are translucent overlays that fade
+ * away when not actively scrolling. For a desktop tool browsing
+ * sessions with thousands of items, operators want a *persistent*
+ * indicator of "there's more content below" — they were missing
+ * clips precisely because they didn't realize there was anything
+ * to scroll to.
+ *
+ * Custom ::-webkit-scrollbar styling forces non-overlay scrollbars
+ * in WebKit (Chrome, Safari, pywebview's WKWebView). The track is
+ * always reserved when overflow:auto is in effect AND content
+ * actually overflows; when content fits, no scrollbar appears
+ * (this is how overflow:auto works regardless of styling).
+ */
+.scroll-list,
+.inspector,
+.find-results,
+#session-bar,
+.cfb-stream-preview {
+  /* WebKit-specific scrollbar styling. Firefox/standard equivalent
+     via scrollbar-width / scrollbar-color is also set below. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.scroll-list::-webkit-scrollbar,
+.inspector::-webkit-scrollbar,
+.find-results::-webkit-scrollbar,
+#session-bar::-webkit-scrollbar,
+.cfb-stream-preview::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+  background: transparent;
+}
+.scroll-list::-webkit-scrollbar-track,
+.inspector::-webkit-scrollbar-track,
+.find-results::-webkit-scrollbar-track,
+#session-bar::-webkit-scrollbar-track,
+.cfb-stream-preview::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scroll-list::-webkit-scrollbar-thumb,
+.inspector::-webkit-scrollbar-thumb,
+.find-results::-webkit-scrollbar-thumb,
+#session-bar::-webkit-scrollbar-thumb,
+.cfb-stream-preview::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 6px;
+}
+.scroll-list::-webkit-scrollbar-thumb:hover,
+.inspector::-webkit-scrollbar-thumb:hover,
+.find-results::-webkit-scrollbar-thumb:hover,
+#session-bar::-webkit-scrollbar-thumb:hover,
+.cfb-stream-preview::-webkit-scrollbar-thumb:hover {
+  background: var(--fg-muted);
+  background-clip: padding-box;
+}
+.scroll-list::-webkit-scrollbar-corner,
+.inspector::-webkit-scrollbar-corner,
+.find-results::-webkit-scrollbar-corner,
+#session-bar::-webkit-scrollbar-corner,
+.cfb-stream-preview::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 /* ---------- mob list ---------- */
@@ -572,7 +655,12 @@ body.view-cfb .view-cfb-only { display: flex; }
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 14px 3px 4px;
+  /* Right padding is meaningful here: when the inspector is
+     fully horizontally scrolled to expose a deeply-nested tree
+     row, the row's right edge is at the parent's scroll extent.
+     A generous internal right padding gives breathing room
+     between the rightmost content and the visible pane edge. */
+  padding: 3px 28px 3px 4px;
   white-space: nowrap;
   /* Size to the row's natural content width (no clipping). The parent
      .scroll-list has overflow: auto; when any row's content exceeds
@@ -879,7 +967,18 @@ body.view-cfb .view-cfb-only { display: flex; }
 .inspector {
   flex: 1;
   overflow: auto;
-  padding: 14px 18px 24px;
+  /* Right padding here AND extra padding-right on .tree-row below.
+     WebKit has a known quirk where padding-right on an
+     overflow:auto element doesn't always participate in the
+     horizontal scroll extent — when content is wider than the
+     visible area and the user scrolls fully right, the rightmost
+     content can visually butt against the parent's right edge.
+     Padding the children themselves (see .tree-row) gives a
+     reliable visual buffer at the right edge of fully-expanded
+     deep trees. The 26px here also keeps non-overflowing inspector
+     content (headers, summary cards, simple property tables) off
+     the pane edge. */
+  padding: 14px 26px 24px 18px;
 }
 .inspector .obj-header {
   display: flex;
