@@ -133,8 +133,15 @@
          width stays stable as content changes. -->
     <section id="inspector-pane">
       <nav id="breadcrumb" class="breadcrumb"></nav>
-      <div id="inspector" class="inspector">
-        <p class="muted">Open a file, then select something to inspect it.</p>
+      <!-- inspector-scroll is the scrollable container; #inspector
+           inside it is the content wrapper that sizes to fit content
+           plus padding-right. That way the padding-right *participates*
+           in horizontal scroll extent — fully scrolling right reveals
+           padding before the content's actual rightmost pixel. -->
+      <div class="inspector-scroll">
+        <div id="inspector" class="inspector">
+          <p class="muted">Open a file, then select something to inspect it.</p>
+        </div>
       </div>
     </section>
   </main>

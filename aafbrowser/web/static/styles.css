@@ -943,21 +943,33 @@ body.view-cfb .view-cfb-only { display: flex; }
 .breadcrumb .crumb.head { color: var(--fg); cursor: default; }
 .breadcrumb .sep { color: var(--fg-faint); }
 
-.inspector {
+/* The .inspector-scroll is the scrollable parent; .inspector inside
+ * it is the content wrapper. This two-layer structure is what makes
+ * right-padding on the inspector content actually create visible
+ * breathing room at full horizontal scroll:
+ *
+ * - .inspector-scroll has overflow:auto and fills the pane's
+ *   remaining vertical space.
+ * - .inspector has padding (including padding-right: 28) AND
+ *   min-width: max-content, so it sizes to its widest descendant
+ *   PLUS the padding. That means the .inspector's box right edge
+ *   sits 28px past its content's rightmost pixel.
+ * - The .inspector-scroll's scroll extent equals its child's
+ *   (.inspector) box width — so when fully scrolled right, the
+ *   visible right edge sits at .inspector's box right edge, and
+ *   the rightmost content sits 28px to the LEFT of that, in the
+ *   padding-right zone.
+ *
+ * Without min-width: max-content the wrapper would shrink to fit
+ * the parent's content area, defeating the trick.
+ */
+.inspector-scroll {
   flex: 1;
   overflow: auto;
-  /* Right padding here AND extra padding-right on .tree-row below.
-     WebKit has a known quirk where padding-right on an
-     overflow:auto element doesn't always participate in the
-     horizontal scroll extent — when content is wider than the
-     visible area and the user scrolls fully right, the rightmost
-     content can visually butt against the parent's right edge.
-     Padding the children themselves (see .tree-row) gives a
-     reliable visual buffer at the right edge of fully-expanded
-     deep trees. The 26px here also keeps non-overflowing inspector
-     content (headers, summary cards, simple property tables) off
-     the pane edge. */
-  padding: 14px 26px 24px 18px;
+}
+.inspector {
+  min-width: max-content;
+  padding: 14px 28px 24px 18px;
 }
 .inspector .obj-header {
   display: flex;
@@ -1006,30 +1018,12 @@ body.view-cfb .view-cfb-only { display: flex; }
      in row N doesn't pull other rows wider. */
 }
 
-/* ---------- inspector right-edge breathing room ----------
- *
- * Apply right padding to EVERY container class that could end up
- * being the rightmost element when content is fully horizontally
- * scrolled. Multiple types are covered because the inspector
- * renders heterogeneous content:
- *   - .prop-row: standard property rows (name | type | value)
- *   - .vec-item: rows inside expanded vectors ([0], [1], ...)
- *   - .nested-obj: containers around expanded nested objects
- *   - .obj-header: headers shown above nested-obj prop tables
- *   - .operator-nested-object: inline operator-style object render
- *
- * Padding-right (not border-right or pane-level gutter) so the
- * right buffer scales with content nesting depth and never creates
- * a hard cutoff that hides content. Each level of nesting adds its
- * own buffer to whichever container ends up rightmost.
- */
-.props-table .prop-row,
-.vec-item,
-.nested-obj,
-.obj-header,
-.operator-nested-object {
-  padding-right: 28px;
-}
+/* Inspector right-edge breathing room is handled by the
+ * .inspector-scroll / .inspector wrapper structure (see above).
+ * The wrapper has min-width: max-content and padding-right: 28px,
+ * so the wrapper's box always extends 28px past its widest content,
+ * which the scroll parent reveals at full horizontal scroll. No
+ * per-row / per-container padding needed. */
 .props-table .prop-name {
   flex: 0 0 220px;
   white-space: nowrap;
