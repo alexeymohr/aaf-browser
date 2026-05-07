@@ -454,61 +454,40 @@ body.view-cfb .view-cfb-only { display: flex; }
  * clips precisely because they didn't realize there was anything
  * to scroll to.
  *
- * Custom ::-webkit-scrollbar styling forces non-overlay scrollbars
- * in WebKit (Chrome, Safari, pywebview's WKWebView). The track is
- * always reserved when overflow:auto is in effect AND content
- * actually overflows; when content fits, no scrollbar appears
- * (this is how overflow:auto works regardless of styling).
+ * Universal styling (`*::-webkit-scrollbar`) so EVERY scrollable
+ * element in the app — listed (.scroll-list / .inspector /
+ * .find-results / #session-bar / .cfb-stream-preview / .hex-view)
+ * AND any implicit scroll surface — uses the same persistent
+ * non-overlay style. Without this, picking-and-listing specific
+ * elements left some scrollbars styled and others falling back
+ * to macOS overlay, which the user reads as "inconsistent".
+ *
+ * When content fits, no scrollbar appears — this is overflow:auto's
+ * default behavior, preserved by the styling.
  */
-.scroll-list,
-.inspector,
-.find-results,
-#session-bar,
-.cfb-stream-preview {
-  /* WebKit-specific scrollbar styling. Firefox/standard equivalent
-     via scrollbar-width / scrollbar-color is also set below. */
+* {
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
 }
-.scroll-list::-webkit-scrollbar,
-.inspector::-webkit-scrollbar,
-.find-results::-webkit-scrollbar,
-#session-bar::-webkit-scrollbar,
-.cfb-stream-preview::-webkit-scrollbar {
+*::-webkit-scrollbar {
   width: 12px;
   height: 12px;
   background: transparent;
 }
-.scroll-list::-webkit-scrollbar-track,
-.inspector::-webkit-scrollbar-track,
-.find-results::-webkit-scrollbar-track,
-#session-bar::-webkit-scrollbar-track,
-.cfb-stream-preview::-webkit-scrollbar-track {
+*::-webkit-scrollbar-track {
   background: transparent;
 }
-.scroll-list::-webkit-scrollbar-thumb,
-.inspector::-webkit-scrollbar-thumb,
-.find-results::-webkit-scrollbar-thumb,
-#session-bar::-webkit-scrollbar-thumb,
-.cfb-stream-preview::-webkit-scrollbar-thumb {
+*::-webkit-scrollbar-thumb {
   background: var(--border);
   border: 3px solid transparent;
   background-clip: padding-box;
   border-radius: 6px;
 }
-.scroll-list::-webkit-scrollbar-thumb:hover,
-.inspector::-webkit-scrollbar-thumb:hover,
-.find-results::-webkit-scrollbar-thumb:hover,
-#session-bar::-webkit-scrollbar-thumb:hover,
-.cfb-stream-preview::-webkit-scrollbar-thumb:hover {
+*::-webkit-scrollbar-thumb:hover {
   background: var(--fg-muted);
   background-clip: padding-box;
 }
-.scroll-list::-webkit-scrollbar-corner,
-.inspector::-webkit-scrollbar-corner,
-.find-results::-webkit-scrollbar-corner,
-#session-bar::-webkit-scrollbar-corner,
-.cfb-stream-preview::-webkit-scrollbar-corner {
+*::-webkit-scrollbar-corner {
   background: transparent;
 }
 
@@ -1025,6 +1004,13 @@ body.view-cfb .view-cfb-only { display: flex; }
   gap: 12px;
   /* No width:100% — each row is intrinsic width, so wide nested content
      in row N doesn't pull other rows wider. */
+  /* Internal right padding gives breathing room between the rightmost
+     content and the inspector's visible right edge when the user
+     opens enough nested expandables to push content all the way over.
+     WebKit's overflow:auto + parent padding-right doesn't always
+     reserve scroll space, so padding the rows themselves is the
+     reliable buffer. */
+  padding-right: 28px;
 }
 .props-table .prop-name {
   flex: 0 0 220px;
