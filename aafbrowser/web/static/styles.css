@@ -1004,13 +1004,36 @@ body.view-cfb .view-cfb-only { display: flex; }
   gap: 12px;
   /* No width:100% — each row is intrinsic width, so wide nested content
      in row N doesn't pull other rows wider. */
-  /* Internal right padding gives breathing room between the rightmost
-     content and the inspector's visible right edge when the user
-     opens enough nested expandables to push content all the way over.
-     WebKit's overflow:auto + parent padding-right doesn't always
-     reserve scroll space, so padding the rows themselves is the
-     reliable buffer. */
-  padding-right: 28px;
+}
+
+/* ---------- inspector right-edge breathing room ----------
+ *
+ * When the user opens enough disclosure carets to push inspector
+ * content past the right edge and scrolls fully right, the rightmost
+ * text must NOT abut the pane edge. WebKit's overflow:auto on the
+ * scrolling parent does NOT reliably reserve padding-right of the
+ * parent in the scroll extent, so padding the parent is insufficient.
+ *
+ * Layered approach: every container that can be at the rightmost
+ * scroll extent gets its own right-side buffer. .prop-row,
+ * .vec-item, and .nested-obj are the three structural containers
+ * that recursively render inspector content; padding all three
+ * guarantees a visible buffer regardless of which one is the
+ * outermost at the scroll-end.
+ *
+ * Using `border-right: ... solid transparent` instead of
+ * `padding-right` because border boxes are GUARANTEED to participate
+ * in the element's box and to be visible at the scroll extent —
+ * unlike padding, which has the WebKit absorption quirk in some
+ * overflow:auto scenarios.
+ */
+.props-table .prop-row,
+.vec-item,
+.nested-obj {
+  border-right: 28px solid transparent;
+  /* box-sizing: content-box (default) means the border is added
+     ON TOP of the content width, so min-width:max-content elsewhere
+     correctly accounts for content + border. */
 }
 .props-table .prop-name {
   flex: 0 0 220px;
