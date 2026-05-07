@@ -559,17 +559,6 @@ body.view-cfb .view-cfb-only { display: flex; }
   flex-direction: column;
   min-height: 0;
   min-width: 0;
-  /* Right gutter OUTSIDE the scrollable .inspector area. Two prior
-     attempts at putting padding-right or border-right on inner
-     elements (.tree-row, .prop-row, .vec-item, .nested-obj) failed
-     to produce visible right-edge breathing room — WebKit's
-     overflow:auto interaction with inner-element padding is too
-     unreliable to fight from inside the scroll container.
-     Padding the *pane* itself (which is OUTSIDE the scrollable
-     .inspector child) reserves a visible 28px gutter between the
-     scrollable content area and the window's right edge.
-     Cannot be overflowed into by any amount of horizontal scrolling. */
-  padding-right: 28px;
 }
 
 /* ---------- track list (operator left column) ---------- */
@@ -1017,11 +1006,30 @@ body.view-cfb .view-cfb-only { display: flex; }
      in row N doesn't pull other rows wider. */
 }
 
-/* Right-edge breathing room for inspector content is provided by
- * the #inspector-pane's padding-right (see above). That puts the
- * gutter OUTSIDE the scrollable .inspector area, where horizontal
- * scrolling cannot reach it. No inner-element padding or borders
- * needed for this purpose. */
+/* ---------- inspector right-edge breathing room ----------
+ *
+ * Apply right padding to EVERY container class that could end up
+ * being the rightmost element when content is fully horizontally
+ * scrolled. Multiple types are covered because the inspector
+ * renders heterogeneous content:
+ *   - .prop-row: standard property rows (name | type | value)
+ *   - .vec-item: rows inside expanded vectors ([0], [1], ...)
+ *   - .nested-obj: containers around expanded nested objects
+ *   - .obj-header: headers shown above nested-obj prop tables
+ *   - .operator-nested-object: inline operator-style object render
+ *
+ * Padding-right (not border-right or pane-level gutter) so the
+ * right buffer scales with content nesting depth and never creates
+ * a hard cutoff that hides content. Each level of nesting adds its
+ * own buffer to whichever container ends up rightmost.
+ */
+.props-table .prop-row,
+.vec-item,
+.nested-obj,
+.obj-header,
+.operator-nested-object {
+  padding-right: 28px;
+}
 .props-table .prop-name {
   flex: 0 0 220px;
   white-space: nowrap;

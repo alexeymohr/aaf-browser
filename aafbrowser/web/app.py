@@ -39,6 +39,12 @@ from . import state as state_mod
 _STATIC_DIR = Path(__file__).parent / "static"
 _logger = logging.getLogger("aafbrowser.web")
 
+# Cache-buster token. Recomputed each Python process startup so a
+# freshly-launched .app is guaranteed to load fresh CSS/JS even if
+# the embedded WebKit cache holds stale responses.
+import time as _time
+_BUST = str(int(_time.time()))
+
 
 def create_app() -> Flask:
     app = Flask(
@@ -46,6 +52,14 @@ def create_app() -> Flask:
         static_folder=str(_STATIC_DIR),
         static_url_path="/static",
     )
+    # Disable Flask's default 12-hour static-file caching. WKWebView
+    # (the embedded browser inside the macOS .app) caches HTTP
+    # responses aggressively, which means a freshly-built .app can
+    # still serve stale CSS / JS to the user across launches if the
+    # response carries a long Cache-Control max-age. Setting this to
+    # 0 tells Flask to emit `Cache-Control: public, max-age=0`, which
+    # forces the browser to revalidate on every request.
+    app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
     _register_routes(app)
     return app
 
@@ -234,9 +248,24 @@ def _register_routes(app: Flask) -> None:
     @app.get("/")
     def index():
         index_html = _STATIC_DIR / "index.html"
-        if index_html.is_file():
-            return app.send_static_file("index.html")
-        return jsonify({"error": "frontend_not_built"}), 503
+        if not index_html.is_file():
+            return jsonify({"error": "frontend_not_built"}), 503
+        # Inject a cache-busting query string into the static asset
+        # URLs so each new build of the .app gets fresh CSS/JS even
+        # if the embedded browser has cached the old responses.
+        # Uses a per-process bust token (app start time) so even
+        # within a single .app version, restarts pick up live edits.
+        from flask import Response
+        html = index_html.read_text()
+        html = html.replace(
+            'href="/static/styles.css"',
+            f'href="/static/styles.css?v={_BUST}"',
+        )
+        html = html.replace(
+            'src="/static/app.js"',
+            f'src="/static/app.js?v={_BUST}"',
+        )
+        return Response(html, mimetype="text/html")
 
     @app.post("/api/open")
     @_require_open
