@@ -95,7 +95,7 @@ codesign --verify --deep --strict --verbose=2 "$APP" 2>&1 | tail -5 || true
 #   - APPLE_ID + APPLE_TEAM_ID + APPLE_APP_PASSWORD env vars: passed
 #     each time. Suited for CI where secrets are injected at build.
 # Without NOTARIZE=1, this section is inert and local builds stay
-# fast. See docs/notarization-setup.md for the one-time setup.
+# fast.
 CRED_ARGS=()
 if [[ "${NOTARIZE:-0}" == "1" ]]; then
   if [[ -z "${CODESIGN_IDENTITY:-}" ]]; then

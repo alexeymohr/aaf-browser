@@ -632,7 +632,7 @@ def _register_routes(app: Flask) -> None:
     @_require_open
     def api_sources():
         """
-        Cross-track deduplicated source-mob inventory (Phase 7).
+        Cross-track deduplicated source-mob inventory.
 
         First call walks every clip in the topmost composition to
         compute use_count + used_by per source mob. Subsequent calls

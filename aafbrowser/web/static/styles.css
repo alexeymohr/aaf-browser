@@ -445,22 +445,19 @@ body.view-cfb .view-cfb-only { display: flex; }
   padding: 4px 0;
 }
 
-/* ---------- scrollbar styling (force visible non-overlay) ----------
- *
- * macOS's default scrollbars are translucent overlays that fade
- * away when not actively scrolling. For a desktop tool browsing
- * sessions with thousands of items, operators want a *persistent*
- * indicator of "there's more content below" — they were missing
- * clips precisely because they didn't realize there was anything
- * to scroll to.
+/* ---------- scrollbar styling (consistent appearance) ----------
  *
  * Universal styling (`*::-webkit-scrollbar`) so EVERY scrollable
  * element in the app — listed (.scroll-list / .inspector /
  * .find-results / #session-bar / .cfb-stream-preview / .hex-view)
- * AND any implicit scroll surface — uses the same persistent
- * non-overlay style. Without this, picking-and-listing specific
- * elements left some scrollbars styled and others falling back
- * to macOS overlay, which the user reads as "inconsistent".
+ * AND any implicit scroll surface — has the same look and hover
+ * behavior. Without this, scrollbars on different panes ended up
+ * with subtly different widths/colors, which read as inconsistent.
+ *
+ * Still macOS-style overlay scrollbars: they fade in and out per
+ * system norms, appear on mouse-over and during active scrolling,
+ * disappear when idle. The win here isn't "always visible" — it's
+ * "reliably the same shape/style on every pane".
  *
  * When content fits, no scrollbar appears — this is overflow:auto's
  * default behavior, preserved by the styling.
@@ -743,7 +740,7 @@ body.view-cfb .view-cfb-only { display: flex; }
 .tree-row.kind-clip-recorder.selected { border-left-color: var(--accent); }
 .tree-row.kind-clip-other { color: var(--fg-muted); }
 
-/* Phase 8: recovery_status visual variants. unrecoverable clips
+/* recovery_status visual variants. unrecoverable clips
    (e.g. Premiere polywav imports) get a faint red border-left so
    the operator sees at a glance that the mic identity isn't
    trustworthy. ambiguous gets a warm-yellow tint. */
@@ -781,7 +778,7 @@ body.view-cfb .view-cfb-only { display: flex; }
 }
 .tree-children .tree-error { color: var(--error); }
 
-/* ---------- sources view (Phase 7 cross-track pull list) ---------- */
+/* ---------- sources view cross-track pull list ---------- */
 
 .source-row {
   display: grid;
@@ -875,7 +872,7 @@ body.view-cfb .view-cfb-only { display: flex; }
 }
 .tree-row .online-marker.offline { background: var(--error); }
 
-/* Operator-summary header on the inspector pane (Phase 6). Sits above
+/* Operator-summary header on the inspector pane. Sits above
    the existing raw-object dump for known operator-meaningful types. */
 .operator-summary {
   background: var(--bg-elev);

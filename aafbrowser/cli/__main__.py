@@ -4,8 +4,6 @@ aafbrowser CLI — five Click commands consuming aafbrowser.core.
 Each command takes exactly one positional argument: a path to an AAF file.
 All commands are read-only — pyaaf2 is opened with mode 'r' and inputs are
 never written back.
-
-Spec: docs/phase1-brief.md "CLI command spec".
 """
 from __future__ import annotations
 
@@ -449,11 +447,11 @@ def web(aaf_path: Optional[str], host: str, port: int, no_browser: bool) -> None
             raise click.ClickException(f"failed to open {aaf_path!r}: {exc}") from exc
 
     app = create_app()
-    # wsgiref.simple_server: stdlib, single-threaded by default. The phase 2
-    # brief permits either threaded=False or a global lock; we use both —
-    # the lock guards pyaaf2 access end-to-end, and the single-threaded
-    # server avoids accidental contention. wsgiref also works on Python
-    # 3.14 where werkzeug's dev server hangs at startup.
+    # wsgiref.simple_server: stdlib, single-threaded by default. We use
+    # both a global state lock AND a single-threaded server — the lock
+    # guards pyaaf2 access end-to-end, and the single-threaded server
+    # avoids accidental contention. wsgiref also works on Python 3.14
+    # where werkzeug's dev server hangs at startup.
     server = make_server(host, port, app)
     url = f"http://{host}:{port}/"
     click.echo(f"aafbrowser web serving on {url}")
@@ -474,7 +472,7 @@ def web(aaf_path: Optional[str], host: str, port: int, no_browser: bool) -> None
             state_mod.close_file()
 
 
-# --- Phase 9: operator-layer CLI commands -----------------------------------
+# --- operator-layer CLI commands --------------------------------------------
 
 
 def _file_size(path: str) -> int:

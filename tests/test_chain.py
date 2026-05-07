@@ -152,7 +152,7 @@ def test_walk_chain_from_source_clip(chain_aaf):
     assert [h.mob_class for h in hops] == ["MasterMob", "SourceMob"]
 
 
-# ---------- walk_chain_tree (Phase 7 multi-input combiner recursion) ----------
+# ---------- walk_chain_tree — multi-input combiner recursion ----------
 
 
 def _comp_by_name(handle, name):
@@ -224,7 +224,7 @@ def test_walk_chain_tree_to_dict_round_trips(combiner_aaf):
     for chain in d["inputs"]:
         for hop_dict in chain:
             assert isinstance(hop_dict, dict)
-            # Hop.to_dict has these keys (from Phase 3)
+            # Hop.to_dict has these keys
             assert "mob_class" in hop_dict
             assert "terminal" in hop_dict
 

@@ -2,20 +2,21 @@
 Operator-first view of an AAF: tracks (audio + video slots on the
 topmost CompositionMob) and clips (Components on a slot's Sequence).
 
-This is the wedge that establishes the post-production-sound-operator
-default surface (Phase 6). It composes core.chain.walk_chain to
-recover mic identity per clip, but adds no new pyaaf2 walking
-primitives of its own — track/clip enumeration is straightforward
-iteration over a single CompositionMob's slots.
+This module establishes the post-production-sound-operator default
+surface. It composes core.chain.walk_chain to recover mic identity
+per clip, but adds no new pyaaf2 walking primitives of its own —
+track/clip enumeration is straightforward iteration over a single
+CompositionMob's slots.
 
-Phase 7 adds:
-- Source file path + online/offline detection per clip (from terminal
+Per-clip information surfaced here:
+- Source file path + online/offline detection (from terminal
   SourceMob locators).
-- Head/tail handle frames + seconds per clip.
-- Per-clip audio specs (sample rate / bit depth / channels).
+- Head/tail handle frames + seconds.
+- Audio specs (sample rate / bit depth / channels).
 - Multi-input OperationGroup fan-out via chain.walk_chain_tree
   populating Clip.sub_clips.
-- source_inventory: cross-track deduplicated source-mob list.
+
+Plus source_inventory: cross-track deduplicated source-mob list.
 
 Cycle safety: the chain-walk handles cycles internally via its own
 visited-set. Track and clip enumeration walks one CompositionMob's
@@ -157,7 +158,7 @@ class Track:
 
 def _track_pan_channel(segment: Any) -> Optional[str]:
     """
-    Premiere stereo-split detection (Phase 8).
+    Premiere stereo-split detection.
 
     If `segment` is a "Mono Audio Pan" OperationGroup carrying a
     ConstantValue AAFRational parameter at the LEFT (≈0.0) or
@@ -166,7 +167,7 @@ def _track_pan_channel(segment: Any) -> Optional[str]:
     position other than hard L/R.
 
     Restricted to OPERATION NAME == "Mono Audio Pan" exactly (the
-    Premiere operation per docs/premiere-aaf-channel-recovery.md).
+    Premiere-specific operation used for stereo-split panning).
     Avid uses a different operation called "Audio Pan" (note: no
     "Mono") that carries different parameter shapes; matching the
     full name avoids false positives. Required parameter must be a
@@ -324,8 +325,8 @@ def list_tracks(handle: Any) -> list[Track]:
     Enumerate audio + video tracks on the topmost CompositionMob,
     ordered by slot_id ascending. Empty list if no CompositionMobs.
 
-    Phase 8: each Track also carries pan_channel ("L"/"R"/None) when
-    the slot's segment is a Mono Audio Pan OperationGroup with a
+    Each Track also carries pan_channel ("L"/"R"/None) when the
+    slot's segment is a Mono Audio Pan OperationGroup with a
     hard-L or hard-R parameter (Premiere stereo-split signal).
     """
     comp = pick_topmost_composition(handle)
@@ -374,12 +375,12 @@ class Clip:
     source_mob_name: Optional[str]
     source_mob_slot_id: Optional[int]
     mic_identity: Optional[str]             # terminal SourceMob.name when is_recorder_source
-    is_recorder_source: bool                # Gotcha-3 filter (see identifying-clip-channels.md)
+    is_recorder_source: bool                # filter for the recorder-source-only fast path
     terminal_reason: Optional[str]          # from chain-walk terminal hop
     physical_track_number: Optional[int]    # PTN at the terminal hop's slot
     chain_length: int                       # number of hops walked (0 for non-SourceClip)
 
-    # Phase 7: per-clip operator info
+    # Per-clip operator info
     source_locators: tuple = ()             # tuple of {url, kind, online} dicts
     head_handle_frames: Optional[int] = None
     tail_handle_frames: Optional[int] = None
@@ -391,9 +392,9 @@ class Clip:
     terminal_mob_id: Optional[str] = None        # terminal SourceMob's mob_id (URN)
     terminal_mob_class: Optional[str] = None     # convenience: terminal hop's mob class
     sub_clips: tuple = ()                   # tuple of Clip — multi-input combiner inputs
-    # Phase 8: format-aware recovery status. "recoverable" means the
-    # operator can trust mic_identity (or sub_clips); "unrecoverable"
-    # means the AAF doesn't carry the channel info (e.g. Premiere
+    # Format-aware recovery status. "recoverable" means the operator
+    # can trust mic_identity (or sub_clips); "unrecoverable" means
+    # the AAF doesn't carry the channel info (e.g. Premiere
     # multichannel polywav imports); "ambiguous" means the chain
     # surfaced something but not enough to be sure.
     recovery_status: str = "recoverable"
@@ -493,7 +494,7 @@ def _build_source_clip_clip(handle: Any, index: int, comp_obj: Any,
                             authoring_kind: str = "unknown",
                             pan_channel: Optional[str] = None) -> "Clip":
     """Build a Clip for a SourceClip component, including chain-walk
-    derived mic identity, recorder-source filter, and Phase 7 per-clip
+    derived mic identity, recorder-source filter, and per-clip
     operator info (source locators, head/tail handles, per-clip audio
     specs).
 
@@ -575,7 +576,7 @@ def _build_source_clip_clip(handle: Any, index: int, comp_obj: Any,
                         mic_identity = h.mob_name
                         break
 
-        # Phase 7: per-clip operator info derived from the chain hops.
+        # Per-clip operator info derived from the chain hops.
         #
         # In real Avid AAFs the chain is typically:
         #   MasterMob → file SourceMob (WAVE/PCM/AIFC, with Locator)
@@ -940,7 +941,7 @@ class AudioSummary:
         return d
 
 
-# ---------- Phase 7: per-clip locator + handle helpers ----------
+# ---------- per-clip locator + handle helpers ----------
 
 
 def _locator_url(loc: Any) -> Optional[str]:
@@ -1429,11 +1430,11 @@ def list_clips(handle: Any, slot_id: int) -> list[Clip]:
         # Per-clip OperationGroup handling:
         #  - Single-input wrapper (Avid audio-level automation): peel
         #    and treat as the inner SourceClip so the chain walk
-        #    recovers the recorder identity (Phase 6 behavior).
+        #    recovers the recorder identity.
         #  - Multi-input combiner (Avid mix-down, stereo bus, etc.):
-        #    Phase 7 fan-out. Build a top-level Clip with sub_clips
-        #    populated, one Clip per input. Top-level mic_identity is
-        #    None (no single answer); inputs each have their own.
+        #    fan out into a top-level Clip with sub_clips populated,
+        #    one Clip per input. Top-level mic_identity is None (no
+        #    single answer); inputs each have their own.
         if cls == "OperationGroup":
             inner = _unwrap_operation_group(comp_obj)
             if inner is not None:

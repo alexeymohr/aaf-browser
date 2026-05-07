@@ -162,7 +162,7 @@ def _write_combiner_aaf(path: Path) -> None:
     A CompositionMob with one audio slot containing two components:
       [0] A plain SourceClip pointing at MstC (control case).
       [1] An OperationGroup combining SourceClips → MstA + MstB
-          (multi-input combiner — Phase 7's tree walk recursion target).
+          (multi-input combiner — exercises walk_chain_tree recursion).
 
     Each SourceMob has a distinct PhysicalTrackNumber (1, 2, 3) so the
     chain-walk tests can assert per-input recovery on the combiner.
@@ -279,8 +279,8 @@ def _add_premiere_identification(f) -> None:
 
 def _write_premiere_stereo_split_aaf(path: Path) -> None:
     """
-    Synthetic Premiere AAF with the stereo-split pattern from
-    docs/premiere-aaf-channel-recovery.md:
+    Synthetic Premiere AAF with the stereo-split pattern Premiere
+    uses to encode L/R pan on dual mono SourceMobs:
 
       CompositionMob "Premiere Stereo Comp"
         slot 1 (Sound): segment = OperationGroup "Mono Audio Pan"

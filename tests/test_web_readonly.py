@@ -91,7 +91,7 @@ def test_every_endpoint_leaves_input_byte_identical(client, minimal_aaf_copy):
     client.get(f"/api/cfb/stream?path={sp}&offset=0&length=8")
     check("cfb-stream")
 
-    # Find — both layers, both scopes, plus class filter (Phase 3)
+    # Find — both layers, both scopes, plus class filter
     client.get("/api/find?pattern=(?i)mob")
     client.get("/api/find?pattern=(?i)mob&layer=aaf&in=names")
     client.get("/api/find?pattern=(?i)mob&layer=cfb")
@@ -99,7 +99,7 @@ def test_every_endpoint_leaves_input_byte_identical(client, minimal_aaf_copy):
     client.get("/api/find?pattern=(?i)mob&class=CompositionMob&class=MasterMob")
     check("find")
 
-    # Walk (Phase 3) — both mob_id and path entry forms
+    # Walk — both mob_id and path entry forms
     client.get(f"/api/walk?mob_id={urn}")
     client.get(f"/api/walk?path=Mobs/{urn}/Slots/0/Segment")
     client.get(f"/api/walk?mob_id={urn}&max_hops=1")
@@ -110,14 +110,14 @@ def test_every_endpoint_leaves_input_byte_identical(client, minimal_aaf_copy):
     client.get(f"/api/resolve?ref=Mobs/{urn}/Slots/0/Segment")
     check("resolve")
 
-    # Operator layer (Phase 6) — tracks list, session summary, and
-    # clips for each track. minimal_aaf has no CompositionMob so
-    # /api/tracks returns an empty list and /api/track/clips returns
-    # 404; both still must leave the file unchanged.
+    # Operator layer — tracks list, session summary, and clips for
+    # each track. minimal_aaf has no CompositionMob so /api/tracks
+    # returns an empty list and /api/track/clips returns 404; both
+    # still must leave the file unchanged.
     client.get("/api/tracks")
     client.get("/api/session")
     client.get("/api/track/clips?slot=1")
-    # Phase 7: source pull list.
+    # Source pull list.
     client.get("/api/sources")
     check("operator")
 

@@ -309,7 +309,7 @@ def test_session_summary_audio_aggregation_empty(multi_track_aaf):
     assert s.audio.channel_counts == {}
 
 
-# ---------- Phase 7: per-clip operator info ----------
+# ---------- per-clip operator info ----------
 
 
 def test_clip_carries_handle_fields_on_chain_aaf(chain_aaf):
@@ -334,7 +334,7 @@ def test_clip_locators_empty_for_import_descriptor(chain_aaf):
     assert clips[0].source_locators == ()
 
 
-def test_clip_to_dict_includes_phase7_fields(chain_aaf):
+def test_clip_to_dict_includes_per_clip_operator_fields(chain_aaf):
     with aaf2.open(str(chain_aaf), "r") as f:
         d = list_clips(f, 1)[0].to_dict()
     assert "source_locators" in d
@@ -348,7 +348,7 @@ def test_clip_to_dict_includes_phase7_fields(chain_aaf):
     assert isinstance(d["sub_clips"], list)
 
 
-# ---------- Phase 7: multi-input combiner fan-out ----------
+# ---------- multi-input combiner fan-out ----------
 
 
 def test_list_clips_fans_out_on_multi_input_combiner(combiner_aaf):
@@ -390,7 +390,7 @@ def test_combiner_clip_to_dict_recursive_sub_clips(combiner_aaf):
     assert d["sub_clips"][0]["mic_identity"] == "CombSrcA"
 
 
-# ---------- Phase 7: locator helpers ----------
+# ---------- locator helpers ----------
 
 
 def test_url_to_local_path_handles_common_forms():
@@ -414,7 +414,7 @@ def test_is_online_for_existing_and_missing(tmp_path):
     assert _is_online("urn:smpte:umid:abc") is None
 
 
-# ---------- Phase 8: authoring detection + Premiere recovery ----------
+# ---------- authoring detection + Premiere recovery ----------
 
 
 def test_classify_product_name():

@@ -51,14 +51,14 @@ const state = {
   view: "tracks",    // "tracks" | "mobs" | "cfb" — top-level view tab
 };
 
-// Session-summary state (Phase 6.x): drives the top headline bar and
+// Session-summary state: drives the top headline bar and
 // is the source of truth for per-clip timecode math.
 const sessionState = {
   summary: null,    // SessionSummary dict from /api/session
   timecode: null,   // {edit_rate, edit_rate_value, fps_nominal, drop, start_frames, ...}
 };
 
-// Sources-view state (Phase 7 cross-track pull list).
+// Sources-view state — cross-track pull list.
 const sourcesState = {
   sources: [],          // SourceInventoryEntry dicts from /api/sources
   loaded: false,        // true once /api/sources has been fetched at least once
@@ -66,7 +66,7 @@ const sourcesState = {
   selectedMobId: null,  // currently selected source mob_id
 };
 
-// Tracks-view (Phase 6) state. Independent of the geek-view state above.
+// Tracks-view state. Independent of the geek-view state above.
 //
 // The center pane is a recursive tree of nodes. Each node has:
 //   id        — stable unique key, used for expansion + selection state
@@ -1543,12 +1543,12 @@ function findCfbEntry(node, path) {
 
 function activateTab(which) {
   // Translate the legacy AAF/CFB tab names used by jumpToMatch into the
-  // new top-level view names (Phase 6).
+  // new top-level view names.
   const view = which === "aaf" ? "mobs" : which === "cfb" ? "cfb" : which;
   activateView(view);
 }
 
-// ---------- Tracks view (Phase 6 operator-first surface) ----------
+// ---------- Tracks view (operator-first surface) ----------
 
 async function loadTracks() {
   if (!state.file) {
@@ -1905,7 +1905,7 @@ function buildClipNode(clip) {
   const hasSubClips = Array.isArray(clip.sub_clips) && clip.sub_clips.length > 0;
   const expandable = hasSubClips ||
     (clip.component_class === "SourceClip" && !!clip.source_mob_id);
-  // Phase 8 visual variant: recovery_status drives an additional class
+  // Visual variant: recovery_status drives an additional class
   // on top of the recorder/other classification.
   const baseClass = clip.is_recorder_source
     ? "kind-clip-recorder"
@@ -2354,7 +2354,7 @@ function operatorSummaryFor(clip) {
     row("PhysicalTrackNumber", clip.physical_track_number);
     row("Chain hops", clip.chain_length);
     row("Terminal reason", clip.terminal_reason);
-    // Phase 7: per-clip audio specs + handles
+    // Per-clip audio specs + handles
     const sr = clip.audio_sample_rate
       ? formatSampleRate(clip.audio_sample_rate)
       : null;
@@ -2384,7 +2384,7 @@ function operatorSummaryFor(clip) {
     row("Combiner inputs", clip.sub_clips.length);
   }
 
-  // Phase 8: format-aware recovery status. Color the value when
+  // Format-aware recovery status. Color the value when
   // unrecoverable/ambiguous so the operator notices.
   if (clip.recovery_status) {
     const cls = clip.recovery_status === "recoverable" ? "mic"
@@ -2424,7 +2424,7 @@ function renderObjectInline(obj) {
   return host;
 }
 
-// ---------- Sources view (Phase 7 cross-track pull list) ----------
+// ---------- Sources view — cross-track pull list ----------
 
 async function loadSourcesIfNeeded(force = false) {
   if (!state.file) {

@@ -35,3 +35,22 @@ packaging/macos/icon.iconset/
 
 # Local scratch / one-off investigation scripts (never committed)
 tmp/
+
+# Playwright MCP / browser-test cache
+.playwright-mcp/
+
+# Stray screenshots / debugging artifacts in repo root
+inspector-with-js-gutter.png
+
+# AGENTS.md — local agent notes, not project code
+AGENTS.md
+
+# Internal development docs — phase briefs, completion reports,
+# postmortems, research notes. Kept locally for reference, never
+# committed (this directory used to be tracked; removed from
+# GitHub in commit de5a40a).
+docs/
+
+# CLAUDE.md — Claude Code project rules. Internal tooling, never
+# committed. Kept locally for IDE/agent use.
+CLAUDE.md

@@ -9,8 +9,6 @@ string, or a datetime to an ISO string without flagging the type.
 The walker for AAFObject graphs (with cycle detection) lives in
 `aafbrowser.core.aaf` and calls into this module for individual property
 values; this module knows nothing about graph traversal.
-
-Spec: see docs/phase1-brief.md "Property serialization spec".
 """
 from __future__ import annotations
 

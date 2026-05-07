@@ -7,17 +7,6 @@ WeakRefs into the dictionary, etc.) — so a developer can answer questions
 like *"is this metadata actually present in the file or am I being lied to
 by some intermediate tool?"*
 
-See [docs/PROJECT_OVERVIEW.md](docs/PROJECT_OVERVIEW.md) for context, and
-the briefs at [docs/phase1-brief.md](docs/phase1-brief.md) (CLI),
-[docs/phase2-brief.md](docs/phase2-brief.md) (web GUI),
-[docs/phase3-brief.md](docs/phase3-brief.md) (chain-walk + class-filtered find),
-[docs/phase4-brief.md](docs/phase4-brief.md) (macOS app + native file picker),
-[docs/phase5-brief.md](docs/phase5-brief.md) (embedded WKWebView),
-[docs/phase6-brief.md](docs/phase6-brief.md) (operator-first browser layer),
-[docs/phase7-brief.md](docs/phase7-brief.md) (deeper recovery + per-clip info + Sources pull list),
-[docs/phase8-brief.md](docs/phase8-brief.md) (Premiere-aware recovery),
-and [docs/phase9-brief.md](docs/phase9-brief.md) (CLI parity + notarization).
-
 ## Install — macOS app (recommended)
 
 Download the latest `AAF-Browser-vX.Y.Z-arm64.dmg` from the
@@ -33,14 +22,8 @@ the same web GUI that pip-installed users see; the difference is
 that it renders inside an embedded WKWebView instead of in
 Safari/Chrome.
 
-If macOS shows a Gatekeeper warning on first launch, the .dmg was
-ad-hoc signed (signing secrets weren't configured in the build):
-1. Try to open it once and let macOS block it.
-2. Open **System Settings → Privacy & Security**, scroll to
-   "Security", and click **Open Anyway** next to AAF Browser.
-3. Confirm. Future launches don't ask again.
-
-A signed + notarized .dmg avoids this prompt entirely.
+The .dmg is signed + notarized + stapled, so the first launch
+proceeds without a Gatekeeper warning.
 
 ## Install — pip (developers / CLI)
 
@@ -150,7 +133,7 @@ before serving so the page lands on the file already loaded.
 
 ```sh
 # Open a file and launch the GUI in the system browser
-aafbrowser web samples/Password_Mix_Audio_Tracks.aaf
+aafbrowser web /path/to/session.aaf
 
 # Custom host/port, no auto-open
 aafbrowser web --host 0.0.0.0 --port 8080 --no-browser session.aaf
@@ -168,12 +151,11 @@ What the GUI does:
   named recorder SourceMob (e.g. `PW_310_ISO1_B`). Clip rows expand to
   reveal the underlying AAF object structure.
 - **All Mobs** and **CFB** tabs sit alongside Tracks for the geek-view
-  paths shipped through Phase 5: a flat Mob list grouped by class with
-  name filter (All Mobs), and the raw CFB storage tree (CFB). The
-  inspector is shared across all four views — selecting something in
-  Tracks and switching to another tab leaves the inspector showing
-  what you last clicked.
-- **Sources** tab (Phase 7) is the cross-track pull list: a
+  paths: a flat Mob list grouped by class with name filter (All
+  Mobs), and the raw CFB storage tree (CFB). The inspector is shared
+  across all four views — selecting something in Tracks and switching
+  to another tab leaves the inspector showing what you last clicked.
+- **Sources** tab is the cross-track pull list: a
   deduplicated roster of every recorder source mob in the file,
   sorted most-used-first, with use-count, format (sample rate · bit
   depth · channels), and online/offline indicator dots when
@@ -188,7 +170,7 @@ What the GUI does:
   when its source file path doesn't exist on disk. Multi-input
   combiner clips (e.g. an Avid mix-down of two mics) expand into
   one sub-clip per input, each with its own recovered identity.
-- Format-aware recovery (Phase 8): the inspector exposes a
+- Format-aware recovery: the inspector exposes a
   `recovery_status` per clip — **recoverable** for normal Avid
   chain-walks, Premiere stereo splits (Mono Audio Pan) and
   combiners whose inputs all resolve; **ambiguous** for
@@ -313,7 +295,7 @@ Terminal reasons cover every non-chainable shape: `essence`,
 `invalid_slot`, `non_clip_segment:<class>`. The walker is cycle-safe
 (visited `(mob_id, slot_id)` set).
 
-### `aafbrowser session <file.aaf>` (Phase 9)
+### `aafbrowser session <file.aaf>`
 
 Headline summary of the file: composition, track + clip + mob counts,
 audio specs, timecode, authoring (with detected NLE kind), duration.
@@ -324,7 +306,7 @@ aafbrowser session session.aaf
 aafbrowser session session.aaf --json | jq .session.timecode
 ```
 
-### `aafbrowser tracks <file.aaf>` (Phase 9)
+### `aafbrowser tracks <file.aaf>`
 
 Audio + video tracks on the topmost CompositionMob, with PT-style
 A1/V1 ordinals and clip counts. Premiere stereo-split tracks show
@@ -335,19 +317,18 @@ aafbrowser tracks session.aaf
 aafbrowser tracks session.aaf --json
 ```
 
-### `aafbrowser clips <file.aaf> --slot N` (Phase 9)
+### `aafbrowser clips <file.aaf> --slot N`
 
 Clips on a single track: timeline timecode, length, recovered mic
-identity (Phase 6 chain-walk), recovery_status (Phase 8 format-aware
-classification), and sub-clip fan-out for multi-input combiners
-(Phase 7).
+identity from the chain-walk, recovery_status (format-aware
+classification), and sub-clip fan-out for multi-input combiners.
 
 ```sh
 aafbrowser clips session.aaf --slot 3
 aafbrowser clips session.aaf --slot 3 --json | jq '.clips[] | select(.recovery_status == "unrecoverable")'
 ```
 
-### `aafbrowser sources <file.aaf>` (Phase 9)
+### `aafbrowser sources <file.aaf>`
 
 Cross-track deduplicated source-mob pull list with per-mob use
 counts. Defaults to "used" sources (use_count > 0); `--unused`
@@ -398,7 +379,7 @@ aafbrowser/
 │   ├── resolver.py # MobID / path / regex search (with mob_class filter)
 │   └── chain.py    # Multi-hop SourceClip chain walker
 ├── cli/            # Click-based CLI (`aafbrowser` console script)
-└── web/            # Phase 2: Flask app + vanilla JS GUI
+└── web/            # Flask app + vanilla JS GUI
     ├── app.py      # Routes under /api
     ├── state.py    # Process-global open file + threading.Lock
     └── static/     # index.html, styles.css, app.js

@@ -25,7 +25,7 @@ from typing import Any, Iterator, Optional
 
 METADICT_NAME = "MetaDictionary-1"
 DEFAULT_COLLAPSE_THRESHOLD = 16  # repeating sibling streams collapse beyond this
-DEFAULT_HEX_PREVIEW = 4096  # bytes; matches phase 1 brief --show-bytes default
+DEFAULT_HEX_PREVIEW = 4096  # bytes; default size for the CLI --show-bytes preview
 
 
 def _entry_dict(entry: Any, kind: str) -> dict[str, Any]:

@@ -647,7 +647,7 @@ def test_tracks_response_carries_timecode_block(client, multi_track_aaf):
     assert j["timecode"] is None
 
 
-# --- /api/session (Phase 6.x headline summary) ---
+# --- /api/session — headline summary ---
 
 
 def test_session_no_file_open(client):
@@ -655,7 +655,7 @@ def test_session_no_file_open(client):
     assert r.status_code == 409
 
 
-# --- /api/sources (Phase 7 cross-track pull list) ---
+# --- /api/sources — cross-track pull list ---
 
 
 def test_sources_no_file_open(client):
@@ -716,11 +716,11 @@ def test_sources_cleared_on_close(client, combiner_aaf):
         assert state_mod._state.source_inventory is None
 
 
-# --- /api/track/clips Phase 7 fields ---
+# --- /api/track/clips per-clip operator fields ---
 
 
-def test_track_clips_response_includes_phase7_fields(client, combiner_aaf):
-    """The Clip dicts gain Phase 7 fields (sub_clips, source_locators,
+def test_track_clips_response_includes_per_clip_operator_fields(client, combiner_aaf):
+    """The Clip dicts include the per-clip operator fields (sub_clips, source_locators,
     head/tail handles, audio specs, terminal_mob_id) without breaking
     the existing shape."""
     client.post("/api/open", json={"path": str(combiner_aaf)})

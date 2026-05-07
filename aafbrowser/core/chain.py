@@ -12,11 +12,9 @@ the last hop has terminal=True and a non-null terminal_reason.
 Cycle-safe: the visited set is keyed by (mob_id_str, slot_id) and the
 walker terminates with reason="cycle" rather than recursing.
 
-API surface verified against pyaaf2 1.7.1 (see
-docs/completion_reports/phase3-completion-report.md for the
-naming-deviation note: pyaaf2 uses SourceClip.mob_id / .slot_id /
-.start, not .source_id / .source_mob_slot_id / .start_time as the
-brief had hypothesized).
+API surface verified against pyaaf2 1.7.1: SourceClip exposes
+.mob_id / .slot_id / .start (not .source_id / .source_mob_slot_id /
+.start_time as some older docs suggest).
 """
 from __future__ import annotations
 
@@ -256,7 +254,7 @@ def _resolve_start(
     raise TypeError(f"unsupported start type: {cls}")
 
 
-# ---------- Phase 7: tree-walk variant for multi-input combiners ----------
+# ---------- tree-walk variant for multi-input combiners ----------
 
 
 @dataclass(frozen=True)
@@ -267,9 +265,9 @@ class HopBranch:
     etc.). Each input is itself a fully-walked sub-chain — list of
     Hop or HopBranch — so the result is a tree.
 
-    Phase 6's walk_chain treats these as opaque terminals with reason
-    "operation_group". walk_chain_tree (Phase 7) recurses into each
-    input so consumers can recover per-input mic identity.
+    The flat walk_chain treats these as opaque terminals with reason
+    "operation_group". walk_chain_tree recurses into each input so
+    consumers can recover per-input mic identity.
     """
     combiner_class: str             # "OperationGroup"
     operation_def_name: Optional[str]   # "Audio Gain", "Mono Audio Mix", etc.

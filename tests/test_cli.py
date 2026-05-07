@@ -255,7 +255,7 @@ def test_find_class_filter_repeatable(chain_aaf):
     assert "SourceMob" not in classnames
 
 
-# ---------- Phase 9: operator-layer CLI commands ----------
+# ---------- operator-layer CLI commands ----------
 
 
 def test_session_human(chain_aaf):
@@ -340,7 +340,7 @@ def test_sources_unused_flag(combiner_aaf):
 
 
 def test_premiere_stereo_split_clips_show_pan(premiere_stereo_split_aaf):
-    """Phase 8 path through the CLI: track-row pan_channel + clip
+    """Premiere stereo-split path through the CLI: track-row pan_channel + clip
     recovery_method should be visible."""
     tres = _run("tracks", str(premiere_stereo_split_aaf))
     assert tres.exit_code == 0
