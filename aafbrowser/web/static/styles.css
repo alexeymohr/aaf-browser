@@ -559,6 +559,17 @@ body.view-cfb .view-cfb-only { display: flex; }
   flex-direction: column;
   min-height: 0;
   min-width: 0;
+  /* Right gutter OUTSIDE the scrollable .inspector area. Two prior
+     attempts at putting padding-right or border-right on inner
+     elements (.tree-row, .prop-row, .vec-item, .nested-obj) failed
+     to produce visible right-edge breathing room — WebKit's
+     overflow:auto interaction with inner-element padding is too
+     unreliable to fight from inside the scroll container.
+     Padding the *pane* itself (which is OUTSIDE the scrollable
+     .inspector child) reserves a visible 28px gutter between the
+     scrollable content area and the window's right edge.
+     Cannot be overflowed into by any amount of horizontal scrolling. */
+  padding-right: 28px;
 }
 
 /* ---------- track list (operator left column) ---------- */
@@ -1006,35 +1017,11 @@ body.view-cfb .view-cfb-only { display: flex; }
      in row N doesn't pull other rows wider. */
 }
 
-/* ---------- inspector right-edge breathing room ----------
- *
- * When the user opens enough disclosure carets to push inspector
- * content past the right edge and scrolls fully right, the rightmost
- * text must NOT abut the pane edge. WebKit's overflow:auto on the
- * scrolling parent does NOT reliably reserve padding-right of the
- * parent in the scroll extent, so padding the parent is insufficient.
- *
- * Layered approach: every container that can be at the rightmost
- * scroll extent gets its own right-side buffer. .prop-row,
- * .vec-item, and .nested-obj are the three structural containers
- * that recursively render inspector content; padding all three
- * guarantees a visible buffer regardless of which one is the
- * outermost at the scroll-end.
- *
- * Using `border-right: ... solid transparent` instead of
- * `padding-right` because border boxes are GUARANTEED to participate
- * in the element's box and to be visible at the scroll extent —
- * unlike padding, which has the WebKit absorption quirk in some
- * overflow:auto scenarios.
- */
-.props-table .prop-row,
-.vec-item,
-.nested-obj {
-  border-right: 28px solid transparent;
-  /* box-sizing: content-box (default) means the border is added
-     ON TOP of the content width, so min-width:max-content elsewhere
-     correctly accounts for content + border. */
-}
+/* Right-edge breathing room for inspector content is provided by
+ * the #inspector-pane's padding-right (see above). That puts the
+ * gutter OUTSIDE the scrollable .inspector area, where horizontal
+ * scrolling cannot reach it. No inner-element padding or borders
+ * needed for this purpose. */
 .props-table .prop-name {
   flex: 0 0 220px;
   white-space: nowrap;
