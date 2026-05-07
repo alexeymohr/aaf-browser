@@ -2768,4 +2768,66 @@ async function init() {
   } catch (_) { /* no-op; user can open manually */ }
 }
 
-document.addEventListener("DOMContentLoaded", init);
+// --------- inspector layout sync (right-edge gutter) ---------
+//
+// WebKit's CSS sizing for the inspector pane (overflow:auto + nested
+// flex/grid descendants with intrinsic widths) was producing
+// inconsistent results — the inspector's box would sometimes be
+// narrower than its descendants, letting the descendants visually
+// overflow past the inspector's right edge into the sibling gutter.
+// CSS workarounds (`min-width: max-content`, grid `max-content`
+// columns, inline-block shrink-to-fit) all hit edge cases.
+//
+// This JS-driven fix is bulletproof: after every content change in
+// #inspector, we explicitly set #inspector.style.width to its
+// scrollWidth (the actual extent of all its descendants), and place
+// the gutter at that width via position: absolute. The scroll
+// container's scrollWidth then equals inspector.width + gutter.width,
+// giving exactly 28px of breathing room past the rightmost descendant
+// regardless of how WebKit sizes things.
+function syncInspectorLayout() {
+  const insp = document.getElementById("inspector");
+  const gutter = document.getElementById("inspector-end-gutter");
+  if (!insp || !gutter) return;
+  // Reset width so we can measure the natural content extent.
+  insp.style.width = "auto";
+  // Force layout reflow before measuring.
+  void insp.offsetWidth;
+  // scrollWidth includes overflowing descendants — this is the
+  // true rightmost pixel of any content in the inspector.
+  const naturalWidth = insp.scrollWidth;
+  // Lock width so flex/grid sizing can't compress it later.
+  insp.style.width = naturalWidth + "px";
+  // Position the gutter right after the content. The +0 is just
+  // explicit — left should equal inspector's right edge.
+  gutter.style.left = naturalWidth + "px";
+}
+
+function setupInspectorLayoutSync() {
+  const insp = document.getElementById("inspector");
+  if (!insp) return;
+  // MutationObserver fires on any DOM change inside #inspector.
+  // We debounce with requestAnimationFrame to coalesce bursts of
+  // changes (e.g. expanding multiple nodes) into one measurement.
+  let pending = false;
+  const obs = new MutationObserver(() => {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(() => {
+      pending = false;
+      syncInspectorLayout();
+    });
+  });
+  obs.observe(insp, { childList: true, subtree: true, characterData: true });
+  // Also resync when the window resizes (changes pane width).
+  window.addEventListener("resize", () => {
+    requestAnimationFrame(syncInspectorLayout);
+  });
+  // Initial sync.
+  requestAnimationFrame(syncInspectorLayout);
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  init();
+  setupInspectorLayoutSync();
+});

@@ -965,22 +965,34 @@ body.view-cfb .view-cfb-only { display: flex; }
 .inspector-scroll {
   flex: 1;
   overflow: auto;
-  display: flex;
-  flex-direction: row;
-  align-items: flex-start;
+  /* Simple block layout. JS (syncInspectorLayout in app.js) explicitly
+     sets #inspector's width and the gutter's left position after every
+     inspector content change. We don't rely on CSS Grid / Flex /
+     inline-block to size things correctly — WebKit's nested-context
+     sizing has subtle bugs that JS measurement bypasses entirely.
+     position: relative so the gutter (position: absolute) is
+     positioned relative to this scroll container's content. */
+  position: relative;
 }
 .inspector {
-  /* Don't shrink below content width — the inspector should size to
-     fit its widest descendant so the scroll extent is right. */
-  flex: 0 0 auto;
-  min-width: 100%;       /* fill horizontal space when content fits */
+  /* Block element. JS sets .style.width explicitly after content
+     changes; CSS just sets the padding. */
   padding: 14px 0 24px 18px;
 }
 #inspector-end-gutter {
-  /* The actual gutter. flex-basis 28px means this element is
-     unconditionally 28px wide on the main axis (horizontal). */
-  flex: 0 0 28px;
-  align-self: stretch;   /* match inspector's height */
+  /* Positioned absolutely so it doesn't participate in normal
+     block flow. JS (syncInspectorLayout in app.js) sets .style.left
+     to #inspector's measured natural width after every content
+     change, so the gutter sits right after the inspector content
+     horizontally. The gutter's 28px width extends the scroll
+     container's scrollWidth past #inspector's right edge,
+     guaranteeing 28px of breathing room when fully scrolled right.
+     Transparent because it's a structural spacer, not visible UI. */
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 28px;
+  background: transparent;
 }
 .inspector .obj-header {
   display: flex;
