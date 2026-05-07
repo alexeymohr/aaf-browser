@@ -943,33 +943,44 @@ body.view-cfb .view-cfb-only { display: flex; }
 .breadcrumb .crumb.head { color: var(--fg); cursor: default; }
 .breadcrumb .sep { color: var(--fg-faint); }
 
-/* The .inspector-scroll is the scrollable parent; .inspector inside
- * it is the content wrapper. This two-layer structure is what makes
- * right-padding on the inspector content actually create visible
- * breathing room at full horizontal scroll:
+/* Inspector layout — sentinel-gutter approach.
  *
- * - .inspector-scroll has overflow:auto and fills the pane's
- *   remaining vertical space.
- * - .inspector has padding (including padding-right: 28) AND
- *   min-width: max-content, so it sizes to its widest descendant
- *   PLUS the padding. That means the .inspector's box right edge
- *   sits 28px past its content's rightmost pixel.
- * - The .inspector-scroll's scroll extent equals its child's
- *   (.inspector) box width — so when fully scrolled right, the
- *   visible right edge sits at .inspector's box right edge, and
- *   the rightmost content sits 28px to the LEFT of that, in the
- *   padding-right zone.
+ * .inspector-scroll is the scroll container, laid out as flex-row
+ * so its two children sit side-by-side horizontally:
+ *   1. #inspector — all the actual content (header, props-table, etc.)
+ *   2. #inspector-end-gutter — a 28px-wide sentinel element
  *
- * Without min-width: max-content the wrapper would shrink to fit
- * the parent's content area, defeating the trick.
+ * The sentinel is a real DOM element with a fixed flex-basis, so it
+ * unconditionally contributes 28px to the parent's horizontal scroll
+ * extent. When the user scrolls fully right, the visible viewport
+ * right edge sits at the sentinel's right edge — the content
+ * (#inspector's rightmost pixel) is therefore 28px to the LEFT of the
+ * visible right edge.
+ *
+ * This approach is robust to any combination of nested expandables,
+ * because it doesn't rely on padding/border/min-width interacting
+ * with overflow:auto in any particular way — the sentinel is just
+ * a normal block element AFTER the content.
  */
 .inspector-scroll {
   flex: 1;
   overflow: auto;
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
 }
 .inspector {
-  min-width: max-content;
-  padding: 14px 28px 24px 18px;
+  /* Don't shrink below content width — the inspector should size to
+     fit its widest descendant so the scroll extent is right. */
+  flex: 0 0 auto;
+  min-width: 100%;       /* fill horizontal space when content fits */
+  padding: 14px 0 24px 18px;
+}
+#inspector-end-gutter {
+  /* The actual gutter. flex-basis 28px means this element is
+     unconditionally 28px wide on the main axis (horizontal). */
+  flex: 0 0 28px;
+  align-self: stretch;   /* match inspector's height */
 }
 .inspector .obj-header {
   display: flex;

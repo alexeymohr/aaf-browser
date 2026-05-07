@@ -133,15 +133,20 @@
          width stays stable as content changes. -->
     <section id="inspector-pane">
       <nav id="breadcrumb" class="breadcrumb"></nav>
-      <!-- inspector-scroll is the scrollable container; #inspector
-           inside it is the content wrapper that sizes to fit content
-           plus padding-right. That way the padding-right *participates*
-           in horizontal scroll extent — fully scrolling right reveals
-           padding before the content's actual rightmost pixel. -->
+      <!-- inspector-scroll is the scrollable container, laid out as
+           flex-row. #inspector contains all the actual content;
+           #inspector-end-gutter is a 28px-wide sentinel element AFTER
+           the content. The gutter is a real flex item (not padding,
+           not a pseudo-element) and is therefore guaranteed to
+           contribute 28px to the horizontal scroll extent. When the
+           user scrolls fully right, the visible right edge sits at
+           the gutter's right edge — and the actual content is in the
+           28px to its left. -->
       <div class="inspector-scroll">
         <div id="inspector" class="inspector">
           <p class="muted">Open a file, then select something to inspect it.</p>
         </div>
+        <div id="inspector-end-gutter" aria-hidden="true"></div>
       </div>
     </section>
   </main>
