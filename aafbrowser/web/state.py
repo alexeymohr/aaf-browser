@@ -11,14 +11,14 @@ allowed: the old handle is closed first.
 """
 from __future__ import annotations
 
-import hashlib
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-import aaf2
+from aafbrowser.core import mob_index as mob_index_mod
+from aafbrowser.core import source as source_mod
 
 
 _LOCK = threading.Lock()
@@ -30,9 +30,7 @@ class _State:
     path: Optional[str] = None  # absolute path string
     sha256: Optional[str] = None  # hash of file contents at open time
     # Eager Mob index: built once at /open and reused for /mobs filtering.
-    # Each entry: {"mob_id": str, "class": str, "name": str | None,
-    #              "slot_count": int}
-    mob_index: list[dict[str, Any]] = field(default_factory=list)
+    mob_index: list[mob_index_mod.MobIndexEntry] = field(default_factory=list)
     # Source inventory: built lazily on first /api/sources request
     # (since it walks every clip in the topmost composition). None
     # until built. Cleared on close.
@@ -54,41 +52,6 @@ def state_lock() -> Iterator[_State]:
         yield _state
 
 
-def _file_sha256(path: str) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 16), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def _build_mob_index(handle: Any) -> list[dict[str, Any]]:
-    """
-    Build the eager Mob index at open time.
-
-    Iterates `f.content.mobs` once and captures only identifying
-    information — name, class, mob_id, slot_count. Property values are
-    NOT serialized here; that's the lazy `/object` endpoint's job.
-    """
-    out: list[dict[str, Any]] = []
-    for mob in handle.content.mobs:
-        slots = getattr(mob, "slots", None)
-        try:
-            slot_count = len(list(slots)) if slots is not None else 0
-        except Exception:
-            slot_count = 0
-        nm = getattr(mob, "name", None)
-        out.append(
-            {
-                "mob_id": str(mob.mob_id),
-                "class": type(mob).__name__,
-                "name": nm if isinstance(nm, str) else None,
-                "slot_count": slot_count,
-            }
-        )
-    return out
-
-
 def open_file(path: str) -> dict[str, Any]:
     """
     Open `path` read-only, build the eager Mob index, and store both in
@@ -105,23 +68,17 @@ def open_file(path: str) -> dict[str, Any]:
     # Close any prior open file before swapping
     _close_locked()
 
-    sha = _file_sha256(abs_path)
-    handle = aaf2.open(abs_path, "r")
-    if handle.writeable or handle.mode != "rb":
-        handle.close()
-        raise RuntimeError(
-            f"refusing to proceed: pyaaf2 returned writeable handle "
-            f"(mode={handle.mode!r}, writeable={handle.writeable!r})"
-        )
+    sha = source_mod.hash_file(abs_path)
+    handle = source_mod.open_readonly(abs_path)
 
     _state.handle = handle
     _state.path = abs_path
     _state.sha256 = sha
-    _state.mob_index = _build_mob_index(handle)
+    _state.mob_index = mob_index_mod.list_mobs(handle)
 
     classes_summary: dict[str, int] = {}
     for entry in _state.mob_index:
-        classes_summary[entry["class"]] = classes_summary.get(entry["class"], 0) + 1
+        classes_summary[entry.mob_class] = classes_summary.get(entry.mob_class, 0) + 1
 
     return {
         "path": _state.path,
@@ -161,7 +118,7 @@ def file_metadata() -> Optional[dict[str, Any]]:
         return None
     classes_summary: dict[str, int] = {}
     for entry in _state.mob_index:
-        classes_summary[entry["class"]] = classes_summary.get(entry["class"], 0) + 1
+        classes_summary[entry.mob_class] = classes_summary.get(entry.mob_class, 0) + 1
     return {
         "path": _state.path,
         "sha256": _state.sha256,

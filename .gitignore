@@ -54,3 +54,6 @@ docs/
 # CLAUDE.md — Claude Code project rules. Internal tooling, never
 # committed. Kept locally for IDE/agent use.
 CLAUDE.md
+
+# Claude Code per-project state (session locks, local settings).
+.claude/

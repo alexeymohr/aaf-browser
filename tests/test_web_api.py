@@ -350,10 +350,12 @@ def test_cfb_stream_returns_hex_and_ascii(client, minimal_aaf):
     j = r.get_json()
     assert j["path"] == stream_path
     assert j["length"] == 16
-    assert isinstance(j["hex"], list) and isinstance(j["ascii"], list)
-    assert len(j["hex"]) == len(j["ascii"]) == 1
+    assert isinstance(j["rows"], list)
+    assert len(j["rows"]) == 1
+    row = j["rows"][0]
+    assert set(row.keys()) == {"offset", "hex_bytes", "ascii_bytes"}
     # 16 bytes of hex => 16 pairs separated by spaces
-    assert j["hex"][0].count(" ") == 15
+    assert row["hex_bytes"].count(" ") == 15
 
 
 def test_cfb_stream_offset_and_truncation(client, minimal_aaf):

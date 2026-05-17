@@ -7,41 +7,34 @@ never written back.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import sys
 from pathlib import Path
 from typing import Optional
 
-import aaf2
 import click
 
 from aafbrowser.core import aaf as aaf_walker
 from aafbrowser.core import cfb as cfb_walker
 from aafbrowser.core import chain as chain_mod
+from aafbrowser.core import mob_index as mob_index_mod
 from aafbrowser.core import operator as operator_mod
 from aafbrowser.core import resolver as resolver_mod
+from aafbrowser.core import source as source_mod
 from aafbrowser.core.serialize import DEFAULT_BYTES_PREVIEW_LIMIT
 
 
-def _file_sha256(path: str) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 16), b""):
-            h.update(chunk)
-    return h.hexdigest()
+_file_sha256 = source_mod.hash_file
 
 
 def _open_readonly(path: str):
-    """Open AAF in read-only mode and refuse to proceed if it isn't."""
-    f = aaf2.open(path, "r")
-    if f.writeable or f.mode != "rb":
-        f.close()
-        raise click.ClickException(
-            f"refusing to proceed: file opened with mode={f.mode!r} writeable={f.writeable!r}"
-        )
-    return f
+    """Thin CLI wrapper: lift core's RuntimeError into a ClickException
+    so failures render through click's normal error path."""
+    try:
+        return source_mod.open_readonly(path)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @click.group()
@@ -183,7 +176,8 @@ def cfb_cmd(
                 + ("  (truncated)" if info["truncated"] else "")
             )
             click.echo("")
-            for line in cfb_walker.format_hex_view(data, base_offset=info["offset"]):
+            rows = cfb_walker.format_hex_view(data, base_offset=info["offset"])
+            for line in cfb_walker.render_hex_lines(rows):
                 click.echo(line)
             return
 
@@ -698,6 +692,40 @@ def sources(aaf_path: str, as_json: bool, unused: bool) -> None:
         loc = e.locators[0]["url"] if e.locators else ""
         click.echo(f"  used={e.use_count:>4}  {name:<40}  {fmt}"
                    + (f"  loc={loc}" if loc else ""))
+
+
+@cli.command()
+@click.argument("aaf_path", type=click.Path(exists=True, dir_okay=False, readable=True))
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+@click.option("--name-contains", default=None,
+              help="Case-insensitive substring filter on Mob.name.")
+@click.option("--class", "cls_filter", default=None,
+              help="Exact class name filter (e.g. CompositionMob, MasterMob).")
+def mobs(aaf_path: str, as_json: bool, name_contains: Optional[str],
+         cls_filter: Optional[str]) -> None:
+    """Top-level Mobs with optional name / class filters. Mirrors /api/mobs."""
+    sha = _file_sha256(aaf_path)
+    with _open_readonly(aaf_path) as f:
+        entries = mob_index_mod.list_mobs(
+            f, name_contains=name_contains, mob_class=cls_filter,
+        )
+
+    if as_json:
+        click.echo(json.dumps({
+            "file": str(Path(aaf_path).resolve()),
+            "sha256": sha,
+            "mobs": [e.to_dict() for e in entries],
+            "total": len(entries),
+        }, indent=2, ensure_ascii=False))
+        return
+
+    click.echo(f"file: {Path(aaf_path).resolve()}")
+    click.echo(f"sha256: {sha}")
+    click.echo(f"{len(entries)} mob{'' if len(entries) == 1 else 's'}")
+    click.echo("")
+    for e in entries:
+        click.echo(f"  {e.mob_class:<16} slots={e.slot_count:<3}  "
+                   f"{e.name or '(unnamed)':<40}  {e.mob_id}")
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ from aafbrowser.core.cfb import (
     cfb_human,
     cfb_tree,
     format_hex_view,
+    render_hex_lines,
     read_stream_bytes,
     walk_cfb,
 )
@@ -158,16 +159,30 @@ def test_read_stream_bytes_unknown_path_raises(minimal_aaf):
 
 def test_format_hex_view_layout():
     data = bytes(range(0, 18))  # 18 bytes -> two rows
-    lines = format_hex_view(data)
-    assert len(lines) == 2
-    assert lines[0].startswith("00000000  ")
-    assert lines[1].startswith("00000010  ")
-    # ASCII column delimited by pipes
-    assert lines[0].endswith("|")
-    assert "|" in lines[0]
+    rows = format_hex_view(data)
+    assert len(rows) == 2
+    assert rows[0].offset == 0x00
+    assert rows[1].offset == 0x10
+    # First row contains all 16 bytes; second row contains 2 bytes.
+    assert rows[0].hex_bytes.count(" ") == 15
+    assert rows[1].hex_bytes.count(" ") == 1
 
 
 def test_format_hex_view_base_offset_shift():
     data = b"abcd"
-    lines = format_hex_view(data, base_offset=0x100)
-    assert lines[0].startswith("00000100  ")
+    rows = format_hex_view(data, base_offset=0x100)
+    assert rows[0].offset == 0x100
+    assert rows[0].ascii_bytes == "abcd"
+
+
+def test_render_hex_lines_classic_format():
+    data = bytes(range(0, 18))
+    lines = render_hex_lines(format_hex_view(data))
+    assert lines[0].startswith("00000000  ")
+    assert lines[1].startswith("00000010  ")
+    # Short final row still pads hex column so ASCII pipes align.
+    assert lines[0].endswith("|")
+    assert "|" in lines[0]
+    # Hex column is padded so the ASCII pipe lines up across rows
+    # (even when the final row is short).
+    assert lines[0].index("|") == lines[1].index("|")

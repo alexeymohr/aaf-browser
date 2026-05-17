@@ -25,13 +25,18 @@ slots, which is by construction non-cyclic.
 from __future__ import annotations
 
 import os
-import re
 from dataclasses import asdict, dataclass
 from typing import Any, Optional
 from urllib.parse import unquote, urlparse
 
 from . import chain as chain_mod
+from . import recovery as recovery_mod
 from . import resolver as resolver_mod
+from ._pyaaf_helpers import (
+    format_rational as _format_rational,
+    rational_to_float as _rational_to_float,
+    slot_property as _slot_property,
+)
 
 
 # Map pyaaf2 slot.media_kind values to operator-meaningful kinds.
@@ -42,28 +47,6 @@ _KIND_FROM_MEDIA: dict[str, str] = {
     "Sound": "audio",
     "Picture": "video",
 }
-
-
-def _format_rational(r: Any) -> Optional[str]:
-    """Same shape as core/chain._format_rational; duplicated to keep this
-    module's dependency graph one-directional (operator → chain only)."""
-    if r is None:
-        return None
-    num = getattr(r, "numerator", None)
-    den = getattr(r, "denominator", None)
-    if num is None or den is None:
-        return str(r)
-    return f"{int(num)}/{int(den)}"
-
-
-def _rational_to_float(r: Any) -> Optional[float]:
-    if r is None:
-        return None
-    num = getattr(r, "numerator", None)
-    den = getattr(r, "denominator", None)
-    if num is None or den is None or int(den) == 0:
-        return None
-    return float(num) / float(den)
 
 
 def format_timecode(frame_count: Optional[int], fps_nominal: Optional[int],
@@ -117,26 +100,6 @@ def format_seconds(seconds: Optional[float]) -> Optional[str]:
     if hrs > 0:
         return f"{sign}{hrs:d}:{mins:02d}:{secs:06.3f}"
     return f"{sign}{mins:d}:{secs:06.3f}"
-
-
-def _slot_property(slot: Any, name: str) -> Any:
-    """
-    Look up a slot Property by name via the properties() iterator.
-
-    PhysicalTrackNumber and similar slot Properties are not auto-exposed
-    as Python attributes by pyaaf2 — getattr returns None even when the
-    property is set. Iterating slot.properties() is the only reliable
-    accessor. (Same pattern as core/chain._slot_property.)
-    """
-    if slot is None:
-        return None
-    prop_iter = getattr(slot, "properties", None)
-    if not callable(prop_iter):
-        return None
-    for p in prop_iter():
-        if p.name == name:
-            return p.value
-    return None
 
 
 @dataclass(frozen=True)
@@ -430,64 +393,6 @@ def _segment_components(segment: Any) -> list[Any]:
     return [peeled]
 
 
-# Premiere polywav-style name pattern: "Audio N" with no _L/_R suffix
-# and no other channel discriminator. Matches the corpus's documented
-# unrecoverable case.
-_POLYWAV_NAME_RE = re.compile(r"^Audio\s+\d+$")
-
-
-def _classify_recovery(
-    *,
-    authoring_kind: str,
-    pan_channel: Optional[str],
-    is_recorder: bool,
-    terminal_class: Optional[str],
-    terminal_reason: Optional[str],
-    source_mob_name: Optional[str],
-    mic_identity: Optional[str],
-) -> tuple[str, Optional[str]]:
-    """
-    Classify a clip's mic-identity recoverability into one of:
-      ("recoverable", method)   — operator can trust mic_identity
-      ("ambiguous", method)     — chain surfaced something, but no
-                                   strong recorder signal
-      ("unrecoverable", method) — channel info isn't in the AAF
-                                   (Premiere polywav, broken chain,
-                                   non-source terminal, etc.)
-
-    method is a short label describing HOW the classification was
-    reached, used for inspector display.
-    """
-    # Premiere-specific paths come first when authoring is Premiere.
-    if authoring_kind == "premiere":
-        if pan_channel:
-            return ("recoverable", f"premiere_stereo_split_pan_{pan_channel.lower()}")
-        if source_mob_name and (
-            source_mob_name.endswith("_L") or source_mob_name.endswith("_R")
-        ):
-            return ("recoverable", "premiere_stereo_split_name")
-        # Polywav heuristic: name like "Audio N" exactly, with no Pan
-        # and no _L/_R suffix → channel destroyed at import.
-        if source_mob_name and _POLYWAV_NAME_RE.match(source_mob_name):
-            return ("unrecoverable", "premiere_polywav_indeterminate")
-
-    # Avid (and generic chain-walk) recovery
-    if is_recorder:
-        return ("recoverable", "avid_chain_walk")
-
-    # Chain ended at a SourceMob but without recorder signal — could be
-    # a tape/file mob that doesn't carry PTN, or a synthetic source.
-    if terminal_class == "SourceMob":
-        return ("ambiguous", "no_recorder_signal")
-
-    # Chain ended at something that isn't a SourceMob: filler, OG,
-    # composition mob, broken ref, etc. Surface terminal_reason.
-    return (
-        "unrecoverable",
-        f"chain_terminated_{terminal_reason or 'unknown'}",
-    )
-
-
 def _build_source_clip_clip(handle: Any, index: int, comp_obj: Any,
                             timeline_start: int, length: Optional[int],
                             comp_slot_edit_rate: Any = None,
@@ -640,7 +545,7 @@ def _build_source_clip_clip(handle: Any, index: int, comp_obj: Any,
         # mob not in this file. Surface that without aborting the listing.
         terminal_reason = "broken_ref"
 
-    rec_status, rec_method = _classify_recovery(
+    rec = recovery_mod.classify(
         authoring_kind=authoring_kind,
         pan_channel=pan_channel,
         is_recorder=is_recorder,
@@ -649,6 +554,7 @@ def _build_source_clip_clip(handle: Any, index: int, comp_obj: Any,
         source_mob_name=source_mob_name,
         mic_identity=mic_identity,
     )
+    rec_status, rec_method = rec.status, rec.method
 
     # Premiere stereo-split: enrich the visible mic_identity with
     # the (L)/(R) suffix when we recovered via pan but the source mob

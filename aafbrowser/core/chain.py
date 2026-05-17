@@ -21,6 +21,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, Optional, Union
 
+from ._pyaaf_helpers import format_rational as _format_rational
+from ._pyaaf_helpers import slot_property as _slot_property
 from .resolver import _try_parse_mob_id
 
 
@@ -41,36 +43,6 @@ class Hop:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
-
-
-def _format_rational(r: Any) -> Optional[str]:
-    if r is None:
-        return None
-    num = getattr(r, "numerator", None)
-    den = getattr(r, "denominator", None)
-    if num is None or den is None:
-        return str(r)
-    return f"{int(num)}/{int(den)}"
-
-
-def _slot_property(slot: Any, name: str) -> Any:
-    """
-    Look up a slot property by name via the properties() iterator.
-
-    pyaaf2 doesn't auto-expose every AAF property as a Python attribute —
-    PhysicalTrackNumber is one of those. `getattr(slot, "PhysicalTrackNumber")`
-    silently returns None even when the property exists with a value;
-    we have to iterate slot.properties() to get the real value.
-    """
-    if slot is None:
-        return None
-    prop_iter = getattr(slot, "properties", None)
-    if not callable(prop_iter):
-        return None
-    for p in prop_iter():
-        if p.name == name:
-            return p.value
-    return None
 
 
 def _slot_at(mob: Any, slot_id: int) -> Optional[Any]:

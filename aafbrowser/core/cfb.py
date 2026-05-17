@@ -10,7 +10,8 @@ Provides:
    CLI command.
 - `read_stream_bytes(aaf_file, path, offset, length)`: lazy byte-range
    read for the `--show-bytes` flag. Never loads the whole stream eagerly.
-- `format_hex_view(data, base_offset)`: classic 16-byte hex+ASCII dump.
+- `format_hex_view(data, base_offset)`: structured 16-byte hex+ASCII rows.
+- `render_hex_lines(rows)`: render HexRow list as classic flat lines (CLI).
 
 Background: even an empty AAF contains thousands of streams from the
 MetaDictionary subtree (ClassDefinitions, TypeDefinitions, ...). The
@@ -20,7 +21,8 @@ e.g. `Properties` lists hundreds of identically-shaped entries.
 """
 from __future__ import annotations
 
-from typing import Any, Iterator, Optional
+from dataclasses import dataclass
+from typing import Any, Iterable, Iterator, Optional
 
 
 METADICT_NAME = "MetaDictionary-1"
@@ -302,14 +304,35 @@ def read_stream_bytes(
     }
 
 
-def format_hex_view(data: bytes, *, base_offset: int = 0, width: int = 16) -> list[str]:
-    """Classic offset / hex / ASCII dump, one line per `width`-byte row."""
-    lines: list[str] = []
+@dataclass(frozen=True)
+class HexRow:
+    """One row of a hex+ASCII dump.
+
+    hex_bytes is space-separated lowercase hex (no padding).
+    ascii_bytes is printable-only ('.' for non-print) and not padded.
+    Both adapters render rows their own way: CLI joins into a flat
+    aligned line via render_hex_lines; web emits each row's fields.
+    """
+    offset: int
+    hex_bytes: str
+    ascii_bytes: str
+
+
+def format_hex_view(data: bytes, *, base_offset: int = 0, width: int = 16) -> list[HexRow]:
+    """Classic offset / hex / ASCII dump, one HexRow per `width`-byte row."""
+    rows: list[HexRow] = []
     for i in range(0, len(data), width):
         chunk = data[i : i + width]
         hex_part = " ".join(f"{b:02x}" for b in chunk)
-        # Pad hex to width so ASCII column aligns on short final row
-        hex_part = hex_part.ljust(width * 3 - 1)
         ascii_part = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
-        lines.append(f"{base_offset + i:08x}  {hex_part}  |{ascii_part}|")
-    return lines
+        rows.append(HexRow(offset=base_offset + i, hex_bytes=hex_part, ascii_bytes=ascii_part))
+    return rows
+
+
+def render_hex_lines(rows: Iterable[HexRow], *, width: int = 16) -> list[str]:
+    """Render HexRow list as the classic flat aligned lines (CLI form)."""
+    pad = width * 3 - 1
+    return [
+        f"{r.offset:08x}  {r.hex_bytes.ljust(pad)}  |{r.ascii_bytes}|"
+        for r in rows
+    ]

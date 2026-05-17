@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import threading
+from dataclasses import asdict
 from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -30,6 +31,7 @@ from flask import Flask, jsonify, request
 from aafbrowser.core import aaf as aaf_walker
 from aafbrowser.core import cfb as cfb_walker
 from aafbrowser.core import chain as chain_mod
+from aafbrowser.core import mob_index as mob_index_mod
 from aafbrowser.core import operator as operator_mod
 from aafbrowser.core import resolver as resolver_mod
 
@@ -187,19 +189,6 @@ def _is_same_origin(req: Any) -> bool:
     return parsed.netloc == req.host
 
 
-def _format_hex_ascii(data: bytes, width: int = 16) -> tuple[list[str], list[str]]:
-    """Two parallel lists: hex rows and ASCII rows. ASCII uses '.' for non-print."""
-    hex_rows: list[str] = []
-    ascii_rows: list[str] = []
-    for i in range(0, len(data), width):
-        chunk = data[i : i + width]
-        hex_rows.append(" ".join(f"{b:02x}" for b in chunk))
-        ascii_rows.append(
-            "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
-        )
-    return hex_rows, ascii_rows
-
-
 def _require_open(fn: Callable):
     """Decorator: 409 if no file is open. Caller acquires lock inside."""
 
@@ -319,24 +308,21 @@ def _register_routes(app: Flask) -> None:
     @app.get("/api/mobs")
     @_require_open
     def api_mobs():
-        cls_filter = request.args.get("class")
-        name_contains = request.args.get("name_contains") or ""
-        name_contains_lc = name_contains.lower()
+        cls_filter = request.args.get("class") or None
+        name_contains = request.args.get("name_contains") or None
         with state_mod.state_lock():
             if not state_mod.is_open():
                 return _err(409, "no_file_open")
             entries = list(state_mod._state.mob_index)  # snapshot under lock
             sha = state_mod._state.sha256
-        out = []
-        for e in entries:
-            if cls_filter and e["class"] != cls_filter:
-                continue
-            if name_contains:
-                nm = e["name"] or ""
-                if name_contains_lc not in nm.lower():
-                    continue
-            out.append(e)
-        return jsonify({"sha256": sha, "mobs": out, "total": len(out)})
+        filtered = mob_index_mod.filter_entries(
+            entries, name_contains=name_contains, mob_class=cls_filter,
+        )
+        return jsonify({
+            "sha256": sha,
+            "mobs": [e.to_dict() for e in filtered],
+            "total": len(filtered),
+        })
 
     @app.get("/api/object")
     @_require_open
@@ -421,7 +407,7 @@ def _register_routes(app: Flask) -> None:
             except Exception as exc:
                 return _internal(exc)
 
-        hex_rows, ascii_rows = _format_hex_ascii(data)
+        rows = cfb_walker.format_hex_view(data, base_offset=info["offset"])
         return jsonify(
             {
                 "sha256": sha,
@@ -430,8 +416,7 @@ def _register_routes(app: Flask) -> None:
                 "offset": info["offset"],
                 "length": info["read_length"],
                 "truncated": info["truncated"],
-                "hex": hex_rows,
-                "ascii": ascii_rows,
+                "rows": [asdict(r) for r in rows],
             }
         )
 

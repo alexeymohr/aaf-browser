@@ -795,12 +795,9 @@ async function showCfbStreamHexView(st) {
         length: Number(lengthIn.value) || 0,
       });
       const lines = [];
-      const offset0 = env.offset;
-      env.hex.forEach((row, i) => {
-        const off = offset0 + i * 16;
-        const hex = row.padEnd(16 * 3 - 1, " ");
-        const ascii = env.ascii[i] || "";
-        lines.push(`${off.toString(16).padStart(8, "0")}  ${hex}  |${ascii}|`);
+      env.rows.forEach((row) => {
+        const hex = row.hex_bytes.padEnd(16 * 3 - 1, " ");
+        lines.push(`${row.offset.toString(16).padStart(8, "0")}  ${hex}  |${row.ascii_bytes}|`);
       });
       const trunc = env.truncated
         ? `\n…  truncated; total ${env.byte_size} bytes`
